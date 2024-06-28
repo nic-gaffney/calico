@@ -4,19 +4,27 @@ const tok = @import("tokenize.zig");
 const gftCompilerError = error{NoInputFile};
 
 pub fn main() !void {
-    if (std.os.argv.len != 2) return gftCompilerError.NoInputFile;
+    if (std.os.argv.len < 2) return gftCompilerError.NoInputFile;
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
+
     var args = std.process.args();
     _ = args.skip();
     const inputFileName = args.next();
+
+    var out_name: []const u8 = "out";
+    if (std.os.argv.len == 3) out_name = args.next().?;
+
     const inputFile = try std.fs.cwd().openFile(inputFileName.?, .{});
     defer inputFile.close();
 
-    std.fs.cwd().makeDir("out") catch |err| {
+    std.fs.cwd().makeDir("calico-out") catch |err|
         if (err != error.PathAlreadyExists) return err;
-    };
-    const outfile = try std.fs.cwd().createFile("out/out.asm", .{});
+
+    const outFileName = try getFileName(gpa.allocator(), out_name, "asm");
+    defer gpa.allocator().free(outFileName);
+    const outfile = try std.fs.cwd().createFile(outFileName, .{});
     const outWriter = outfile.writer();
     defer outfile.close();
 
@@ -24,9 +32,10 @@ pub fn main() !void {
     const all = try inputFile.readToEndAlloc(gpa.allocator(), 2048);
     defer gpa.allocator().free(all);
 
-    const toks = try tok.tokenize(gpa.allocator(), all);
-    defer gpa.allocator().free(toks);
-    var tokIter = tok.TokenIterator{ .tokens = toks };
+    var tokenizer = tok.Tokenizer.init(gpa.allocator(), all);
+    defer tokenizer.deinit();
+    var tokIter = tok.TokenIterator{ .tokens = try tokenizer.tokenize() };
+
     try outWriter.print("global _start:\n", .{});
     while (tokIter.next()) |t| {
         switch (t) {
@@ -52,13 +61,27 @@ pub fn main() !void {
         }
     }
 
-    const nasmargv = [_][]const u8{ "nasm", "-felf64", "out/out.asm" };
-    const nasmproc = try std.ChildProcess.run(.{ .argv = &nasmargv, .allocator = gpa.allocator() });
+    // Run nasm and ld to build the executable
+    // TODO: switch to qbe or llvm (preferabbly qbe)
+    const nasmFile = try getFileName(gpa.allocator(), out_name, "asm");
+    defer gpa.allocator().free(nasmFile);
+    const nasmargv = [_][]const u8{ "nasm", "-felf64", nasmFile };
+    const nasmproc = try std.process.Child.run(.{ .argv = &nasmargv, .allocator = gpa.allocator() });
     defer gpa.allocator().free(nasmproc.stdout);
     defer gpa.allocator().free(nasmproc.stderr);
 
-    const ldargv = [_][]const u8{ "ld", "-o", "out/out", "out/out.o" };
-    const ldproc = try std.ChildProcess.run(.{ .argv = &ldargv, .allocator = gpa.allocator() });
+    const ldFile = try getFileName(gpa.allocator(), out_name, "o");
+    defer gpa.allocator().free(ldFile);
+    const binFile = try getFileName(gpa.allocator(), out_name, "");
+    defer gpa.allocator().free(binFile);
+    const ldargv = [_][]const u8{ "ld", "-o", binFile, ldFile };
+    const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = gpa.allocator() });
     defer gpa.allocator().free(ldproc.stdout);
     defer gpa.allocator().free(ldproc.stderr);
+}
+
+inline fn getFileName(allocator: std.mem.Allocator, out_name: []const u8, fileType: []const u8) ![]const u8 {
+    var hasDot: []const u8 = ".";
+    if (fileType.len == 0) hasDot = "";
+    return try std.fmt.allocPrint(allocator, "calico-out/{s}{s}{s}", .{ out_name, hasDot, fileType });
 }
