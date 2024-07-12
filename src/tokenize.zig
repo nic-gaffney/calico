@@ -2,74 +2,75 @@ const std = @import("std");
 
 const TokenError = error{UnknownToken};
 
-const Token = union(enum) {
+pub const Token = union(enum) {
     ret: []const u8,
     intLit: i32,
+    binaryOp: u8,
     semiCol,
     nil,
 };
 
-pub const TokenIterator = struct {
-    tokens: std.ArrayList(Token),
-    index: usize = 0,
+/// Creates a tokenizer over a slice of typ
+pub fn Iterator(comptime typ: type) type {
+    return struct {
+        items: []const typ,
+        index: usize = 0,
 
-    pub fn next(self: *TokenIterator) ?Token {
-        defer self.index = self.index + 1;
-        if (self.index >= self.tokens.items.len) return null;
-        return self.tokens.items[self.index];
-    }
-};
+        /// Initialize tokenizer with a slice
+        pub fn init(items: []const typ) Iterator(typ) {
+            return Iterator(typ){ .items = items };
+        }
 
-pub const StringIterator = struct {
-    string: []const u8,
-    index: usize = 0,
+        /// Get current item
+        pub fn peek(self: Iterator(typ)) ?typ {
+            if (self.index >= self.items.len) return null;
+            return self.items[self.index];
+        }
 
-    pub fn init(string: []const u8) StringIterator {
-        return StringIterator{ .string = string };
-    }
+        /// Get current item and iterate index
+        pub fn consume(self: *Iterator(typ)) ?typ {
+            defer self.index += 1;
+            return self.peek();
+        }
+        /// Get current item and iterate index
+        pub const next = consume;
 
-    pub fn peek(self: StringIterator) ?u8 {
-        if (self.index >= self.string.len) return null;
-        return self.string[self.index];
-    }
+        /// Skip over current item
+        pub fn skip(self: *Iterator(typ)) void {
+            self.index += 1;
+        }
+    };
+}
 
-    pub fn consume(self: *StringIterator) ?u8 {
-        defer self.index += 1;
-        return self.peek();
-    }
-
-    pub fn skip(self: *StringIterator) void {
-        self.index += 1;
-    }
-};
-
+/// Tokenizes a string of source code
 pub const Tokenizer = struct {
-    src: StringIterator,
+    src: Iterator(u8),
     allocator: std.mem.Allocator,
     toks: std.ArrayList(Token),
 
+    /// Initializes a string of source code
+    /// Deinitialize with Tokenizer.deinit()
     pub fn init(allocator: std.mem.Allocator, src: []const u8) Tokenizer {
         return Tokenizer{
-            .src = StringIterator.init(src),
+            .src = Iterator(u8).init(src),
             .allocator = allocator,
             .toks = std.ArrayList(Token).init(allocator),
         };
     }
 
+    /// Releases allocated memory
     pub fn deinit(self: *Tokenizer) void {
         self.toks.deinit();
     }
 
+    /// Returns an ArrayList of tokens
     pub fn tokenize(self: *Tokenizer) !std.ArrayList(Token) {
         var str = std.ArrayList(u8).init(self.allocator);
         defer str.deinit();
 
         while (self.src.peek()) |char| {
             switch (char) {
-                ' ', '\n', '\t' => {
-                    self.src.skip();
-                    continue;
-                },
+                ' ', '\n', '\t' => self.src.skip(),
                 '0'...'9' => {
                     while (std.ascii.isDigit(self.src.peek().?))
                         try str.append(self.src.consume().?);
@@ -91,12 +92,44 @@ pub const Tokenizer = struct {
                     self.src.skip();
                     try self.toks.append(.semiCol);
                 },
-                '+', '-', '*', '/' => {
-                    // Process operator
-                },
+                '+', '-', '*', '/' => try self.toks.append(.{ .binaryOp = self.src.consume().? }),
                 else => {},
             }
         }
         return self.toks;
     }
 };
+
+test "Tokenize" {
+    std.testing.log_level = std.log.Level.info;
+    const expect = std.testing.expect;
+    const testSource: []const u8 = "exit 120 + 150 - 260 * 12 / 5;";
+    var toks = Tokenizer.init(std.testing.allocator, testSource);
+    defer toks.deinit();
+    const arrtoks = try toks.tokenize();
+    const expected = &[_]Token{
+        .{ .ret = "exit" },
+        .{ .intLit = 120 },
+        .{ .binaryOp = '+' },
+        .{ .intLit = 150 },
+        .{ .binaryOp = '-' },
+        .{ .intLit = 260 },
+        .{ .binaryOp = '*' },
+        .{ .intLit = 12 },
+        .{ .binaryOp = '/' },
+        .{ .intLit = 5 },
+        .semiCol,
+    };
+    for (arrtoks.items, expected) |act, exp| {
+        switch (act) {
+            .ret => |v| {
+                try expect(std.mem.eql(u8, v, exp.ret));
+                std.testing.allocator.free(v);
+            },
+            .intLit => |v| try expect(v == exp.intLit),
+            .semiCol => |v| try expect(v == exp.semiCol),
+            .binaryOp => |v| try expect(v == exp.binaryOp),
+            else => {},
+        }
+    }
+}

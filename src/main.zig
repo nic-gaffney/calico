@@ -22,20 +22,23 @@ pub fn main() !void {
     std.fs.cwd().makeDir("calico-out") catch |err|
         if (err != error.PathAlreadyExists) return err;
 
+    // Setup native code writer
     const outFileName = try getFileName(gpa.allocator(), out_name, "asm");
     defer gpa.allocator().free(outFileName);
     const outfile = try std.fs.cwd().createFile(outFileName, .{});
     const outWriter = outfile.writer();
     defer outfile.close();
 
-    // Logic here to compile language
+    // Turn the input file into a string
     const all = try inputFile.readToEndAlloc(gpa.allocator(), 2048);
     defer gpa.allocator().free(all);
 
+    // Tokenize
     var tokenizer = tok.Tokenizer.init(gpa.allocator(), all);
     defer tokenizer.deinit();
-    var tokIter = tok.TokenIterator{ .tokens = try tokenizer.tokenize() };
+    var tokIter = tok.Iterator(tok.Token).init((try tokenizer.tokenize()).items);
 
+    // Parse tokens
     try outWriter.print("global _start:\n", .{});
     while (tokIter.next()) |t| {
         switch (t) {
@@ -57,15 +60,14 @@ pub fn main() !void {
                 , .{num.?.intLit});
                 gpa.allocator().free(t.ret);
             },
+            // No other commands
             else => {},
         }
     }
 
     // Run nasm and ld to build the executable
     // TODO: switch to qbe or llvm (preferabbly qbe)
-    const nasmFile = try getFileName(gpa.allocator(), out_name, "asm");
-    defer gpa.allocator().free(nasmFile);
-    const nasmargv = [_][]const u8{ "nasm", "-felf64", nasmFile };
+    const nasmargv = [_][]const u8{ "nasm", "-felf64", outFileName };
     const nasmproc = try std.process.Child.run(.{ .argv = &nasmargv, .allocator = gpa.allocator() });
     defer gpa.allocator().free(nasmproc.stdout);
     defer gpa.allocator().free(nasmproc.stderr);
@@ -80,6 +82,7 @@ pub fn main() !void {
     defer gpa.allocator().free(ldproc.stderr);
 }
 
+/// Get file extension based on filename
 inline fn getFileName(allocator: std.mem.Allocator, out_name: []const u8, fileType: []const u8) ![]const u8 {
     var hasDot: []const u8 = ".";
     if (fileType.len == 0) hasDot = "";

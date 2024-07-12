@@ -1,3 +1,2 @@
-calico-out/
-zig-out/
+*-out/
 .zig-cache/
