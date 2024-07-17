@@ -1,8 +1,15 @@
 const std = @import("std");
 
 const TokenError = error{UnknownToken};
+const TokenType = enum {
+    ret,
+    intLit,
+    binaryOp,
+    semiCol,
+    nil,
+};
 
-pub const Token = union(enum) {
+pub const Token = union(TokenType) {
     ret: []const u8,
     intLit: i32,
     binaryOp: u8,

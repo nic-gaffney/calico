@@ -1,5 +1,6 @@
 const std = @import("std");
 const tok = @import("tokenize.zig");
+const ast = @import("ast.zig");
 
 const gftCompilerError = error{NoInputFile};
 
