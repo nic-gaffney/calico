@@ -1,21 +1,36 @@
 const std = @import("std");
 
 const TokenError = error{UnknownToken};
-const TokenType = enum {
-    ret,
+pub const TokenType = enum {
+    ident,
     intLit,
-    binaryOp,
+    ret,
+    plus,
+    minus,
+    star,
+    slash,
     semiCol,
     nil,
 };
 
 pub const Token = union(TokenType) {
-    ret: []const u8,
+    ident: []const u8,
     intLit: i32,
-    binaryOp: u8,
+    ret,
+    plus,
+    minus,
+    star,
+    slash,
     semiCol,
     nil,
 };
+
+pub fn checkType(tok: Token, comptime typ: TokenType) bool {
+    return switch (tok) {
+        typ => true,
+        else => false,
+    };
+}
 
 /// Creates a tokenizer over a slice of typ
 pub fn Iterator(comptime typ: type) type {
@@ -91,7 +106,8 @@ pub const Tokenizer = struct {
                     while (std.ascii.isAlphanumeric(self.src.peek().?))
                         try str.append(self.src.consume().?);
 
-                    try self.toks.append(.{ .ret = try str.toOwnedSlice() });
+                    if (std.mem.eql(u8, "exit", str.items))
+                        try self.toks.append(.ret);
                     str.deinit();
                     str = std.ArrayList(u8).init(self.allocator);
                 },
@@ -99,7 +115,22 @@ pub const Tokenizer = struct {
                     self.src.skip();
                     try self.toks.append(.semiCol);
                 },
-                '+', '-', '*', '/' => try self.toks.append(.{ .binaryOp = self.src.consume().? }),
+                '+' => {
+                    self.src.skip();
+                    try self.toks.append(.plus);
+                },
+                '-' => {
+                    self.src.skip();
+                    try self.toks.append(.minus);
+                },
+                '*' => {
+                    self.src.skip();
+                    try self.toks.append(.star);
+                },
+                '/' => {
+                    self.src.skip();
+                    try self.toks.append(.slash);
+                },
                 else => {},
             }
         }
@@ -115,27 +146,27 @@ test "Tokenize" {
     defer toks.deinit();
     const arrtoks = try toks.tokenize();
     const expected = &[_]Token{
-        .{ .ret = "exit" },
+        .ret,
         .{ .intLit = 120 },
-        .{ .binaryOp = '+' },
+        .plus,
         .{ .intLit = 150 },
-        .{ .binaryOp = '-' },
+        .minus,
         .{ .intLit = 260 },
-        .{ .binaryOp = '*' },
+        .star,
         .{ .intLit = 12 },
-        .{ .binaryOp = '/' },
+        .slash,
         .{ .intLit = 5 },
         .semiCol,
     };
     for (arrtoks.items, expected) |act, exp| {
         switch (act) {
-            .ret => |v| {
-                try expect(std.mem.eql(u8, v, exp.ret));
-                std.testing.allocator.free(v);
-            },
+            .ret => |v| try expect(v == exp.ret),
             .intLit => |v| try expect(v == exp.intLit),
             .semiCol => |v| try expect(v == exp.semiCol),
-            .binaryOp => |v| try expect(v == exp.binaryOp),
+            .plus => |v| try expect(v == exp.plus),
+            .minus => |v| try expect(v == exp.minus),
+            .star => |v| try expect(v == exp.star),
+            .slash => |v| try expect(v == exp.slash),
             else => {},
         }
     }

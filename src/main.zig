@@ -45,21 +45,15 @@ pub fn main() !void {
         switch (t) {
             .ret => {
                 const num = tokIter.next();
-                switch (num.?) {
-                    .intLit => {},
-                    else => break,
-                }
-                switch (tokIter.next().?) {
-                    .semiCol => {},
-                    else => break,
-                }
+                if (!tok.checkType(num.?, tok.TokenType.intLit)) return error.SyntaxError;
+
+                if (!tok.checkType(tokIter.next().?, tok.TokenType.semiCol)) return error.SyntaxError;
                 try outWriter.print(
                     \\  mov rax, 60
                     \\  mov rdi, {}
                     \\  syscall
                     \\
                 , .{num.?.intLit});
-                gpa.allocator().free(t.ret);
             },
             // No other commands
             else => {},
