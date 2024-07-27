@@ -2,25 +2,37 @@ const std = @import("std");
 const parse = @import("parser.zig");
 
 pub const Generator = struct {
-    root: parse.NodeExit,
+    root: []const parse.NodeStmt,
     allocator: std.mem.Allocator,
     code: std.ArrayList(u8),
 
-    pub fn init(allocator: std.mem.Allocator, root: parse.NodeExit) Generator {
+    pub fn init(allocator: std.mem.Allocator, stmts: []const parse.NodeStmt) Generator {
         return .{
-            .root = root,
+            .root = stmts,
             .allocator = allocator,
             .code = std.ArrayList(u8).init(allocator),
         };
     }
 
-    fn genExit(self: *Generator) ![]const u8 {
+    pub fn deinit(self: *Generator) void {
+        self.code.deinit();
+    }
+
+    fn genExit(self: *Generator, expr: parse.NodeExpr) ![]const u8 {
         return try std.fmt.allocPrint(self.allocator,
             \\  mov rax, 60
-            \\  mov rdi, {}
+            \\  mov rdi, {d}
             \\  syscall
             \\
-        , .{self.root.expr.intLit.intLit});
+        , .{switch (expr) {
+            .intLit => expr.intLit.intlit.intLit,
+            else => return error.NotImplemented,
+        }});
+    }
+
+    fn genValue(self: *Generator) ![]const u8 {
+        _ = self;
+        return error.NotImplemented;
     }
 
     pub fn generate(self: *Generator) ![]const u8 {
@@ -28,9 +40,13 @@ pub const Generator = struct {
             \\global _start:
             \\
         );
-        const exitStmt = try self.genExit();
-        defer self.allocator.free(exitStmt);
-        try self.code.appendSlice(exitStmt);
-        return try self.code.toOwnedSlice();
+        for (self.root) |stmt| {
+            const code = switch (stmt) {
+                .exit => try self.genExit(stmt.exit.expr),
+                .value => try self.genValue(),
+            };
+            try self.code.appendSlice(code);
+        }
+        return self.code.items;
     }
 };

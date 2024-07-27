@@ -46,12 +46,14 @@ pub fn main() !void {
     const tokens = try tokenizer.tokenize();
 
     // Parse
-    var parser = parse.Parser.init(tokens);
+    var parser = parse.Parser.init(allocator, tokens);
+    defer parser.deinit();
     const tree = try parser.parse();
 
     // Codegen
     var generator = gen.Generator.init(allocator, tree);
     const code = try generator.generate();
+    std.debug.print("{s}", .{code});
     defer allocator.free(code);
     try outWriter.writeAll(code);
 

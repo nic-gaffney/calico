@@ -8,23 +8,29 @@ const TokenizeError = error{
 pub const TokenType = enum {
     ident,
     intLit,
+    constant,
+    variable,
     exit,
     plus,
     minus,
     star,
     slash,
     semiCol,
+    equal,
 };
 
 pub const Token = union(TokenType) {
     ident: []const u8,
     intLit: i32,
+    constant,
+    variable,
     exit,
     plus,
     minus,
     star,
     slash,
     semiCol,
+    equal,
 
     pub fn fromChar(char: u8) !Token {
         return switch (char) {
@@ -33,8 +39,17 @@ pub const Token = union(TokenType) {
             '*' => .star,
             '/' => .slash,
             ';' => .semiCol,
+            '=' => .equal,
             else => TokenizeError.UnknownToken,
         };
+    }
+
+    pub fn fromStr(str: []const u8) Token {
+        const eql = std.mem.eql;
+        if (eql(u8, str, "exit")) return .exit;
+        if (eql(u8, str, "const")) return .constant;
+        if (eql(u8, str, "var")) return .variable;
+        return Token{ .ident = str };
     }
 };
 
@@ -67,13 +82,18 @@ pub fn Iterator(comptime typ: type) type {
         }
 
         /// Get current item and iterate index
-        pub fn consume(self: *Iterator(typ)) ?typ {
+        pub fn next(self: *Iterator(typ)) ?typ {
             const ret = self.peek();
             self.index += 1;
             return ret;
         }
-        /// Get current item and iterate index
-        pub const next = consume;
+
+        pub fn consume(self: *Iterator(typ), comptime expected: TokenType) !?typ {
+            if (typ != Token) return error.TokenIteratorOnly;
+            if (!checkType(self.peek().?, expected))
+                return error.ExpectedToken;
+            return self.next();
+        }
 
         /// Skip over current item
         pub fn skip(self: *Iterator(typ)) void {
@@ -100,6 +120,10 @@ pub const Tokenizer = struct {
 
     /// Releases allocated memory
     pub fn deinit(self: *Tokenizer) void {
+        for (self.toks.items) |token| {
+            if (checkType(token, TokenType.ident))
+                self.allocator.free(token.ident);
+        }
         self.toks.deinit();
     }
 
@@ -113,7 +137,7 @@ pub const Tokenizer = struct {
                 ' ', '\n', '\t' => self.src.skip(),
                 '0'...'9' => {
                     while (std.ascii.isDigit(self.src.peek().?))
-                        try buff.append(self.src.consume().?);
+                        try buff.append(self.src.next().?);
 
                     const num: i32 = try std.fmt.parseInt(i32, buff.items, 10);
                     try self.toks.append(.{ .intLit = num });
@@ -121,13 +145,14 @@ pub const Tokenizer = struct {
                 },
                 'a'...'z', 'A'...'Z' => {
                     while (std.ascii.isAlphanumeric(self.src.peek().?))
-                        try buff.append(self.src.consume().?);
-                    if (std.mem.eql(u8, "exit", buff.items)) {
-                        try self.toks.append(.exit);
-                    } else return TokenizeError.UnknownToken;
+                        try buff.append(self.src.next().?);
+                    const str = try buff.toOwnedSlice();
+                    const token = Token.fromStr(str);
+                    try self.toks.append(token);
+                    if (!checkType(token, TokenType.ident)) self.allocator.free(str);
                     buff.clearAndFree();
                 },
-                else => self.toks.append(try Token.fromChar(self.src.consume().?)),
+                else => self.toks.append(try Token.fromChar(self.src.next().?)),
             };
         }
         return self.toks.items;
