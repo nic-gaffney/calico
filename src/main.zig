@@ -1,13 +1,19 @@
 const std = @import("std");
 const tok = @import("tokenize.zig");
-const ast = @import("ast.zig");
-
-const gftCompilerError = error{NoInputFile};
+const parse = @import("parser.zig");
+const gen = @import("codegen.zig");
 
 pub fn main() !void {
-    if (std.os.argv.len < 2) return gftCompilerError.NoInputFile;
+    if (std.os.argv.len < 2) {
+        std.debug.print(
+            \\info: Usage: calico [input file]
+            \\
+        , .{});
+        return;
+    }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
     defer _ = gpa.deinit();
 
     var args = std.process.args();
@@ -24,57 +30,46 @@ pub fn main() !void {
         if (err != error.PathAlreadyExists) return err;
 
     // Setup native code writer
-    const outFileName = try getFileName(gpa.allocator(), out_name, "asm");
-    defer gpa.allocator().free(outFileName);
+    const outFileName = try getFileName(allocator, out_name, "asm");
+    defer allocator.free(outFileName);
     const outfile = try std.fs.cwd().createFile(outFileName, .{});
     const outWriter = outfile.writer();
     defer outfile.close();
 
     // Turn the input file into a string
-    const all = try inputFile.readToEndAlloc(gpa.allocator(), 2048);
-    defer gpa.allocator().free(all);
+    const all = try inputFile.readToEndAlloc(allocator, 2048);
+    defer allocator.free(all);
 
     // Tokenize
-    var tokenizer = tok.Tokenizer.init(gpa.allocator(), all);
+    var tokenizer = tok.Tokenizer.init(allocator, all);
     defer tokenizer.deinit();
-    var tokIter = tok.Iterator(tok.Token).init((try tokenizer.tokenize()).items);
+    const tokens = try tokenizer.tokenize();
 
-    // Parse tokens
-    try outWriter.print("global _start:\n", .{});
-    while (tokIter.next()) |t| {
-        switch (t) {
-            .ret => {
-                const num = tokIter.next();
-                if (!tok.checkType(num.?, tok.TokenType.intLit)) return error.SyntaxError;
+    // Parse
+    var parser = parse.Parser.init(tokens);
+    const tree = try parser.parse();
 
-                if (!tok.checkType(tokIter.next().?, tok.TokenType.semiCol)) return error.SyntaxError;
-                try outWriter.print(
-                    \\  mov rax, 60
-                    \\  mov rdi, {}
-                    \\  syscall
-                    \\
-                , .{num.?.intLit});
-            },
-            // No other commands
-            else => {},
-        }
-    }
+    // Codegen
+    var generator = gen.Generator.init(allocator, tree);
+    const code = try generator.generate();
+    defer allocator.free(code);
+    try outWriter.writeAll(code);
 
     // Run nasm and ld to build the executable
     // TODO: switch to qbe or llvm (preferabbly qbe)
     const nasmargv = [_][]const u8{ "nasm", "-felf64", outFileName };
-    const nasmproc = try std.process.Child.run(.{ .argv = &nasmargv, .allocator = gpa.allocator() });
-    defer gpa.allocator().free(nasmproc.stdout);
-    defer gpa.allocator().free(nasmproc.stderr);
+    const nasmproc = try std.process.Child.run(.{ .argv = &nasmargv, .allocator = allocator });
+    defer allocator.free(nasmproc.stdout);
+    defer allocator.free(nasmproc.stderr);
 
-    const ldFile = try getFileName(gpa.allocator(), out_name, "o");
-    defer gpa.allocator().free(ldFile);
-    const binFile = try getFileName(gpa.allocator(), out_name, "");
-    defer gpa.allocator().free(binFile);
+    const ldFile = try getFileName(allocator, out_name, "o");
+    defer allocator.free(ldFile);
+    const binFile = try getFileName(allocator, out_name, "");
+    defer allocator.free(binFile);
     const ldargv = [_][]const u8{ "ld", "-o", binFile, ldFile };
-    const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = gpa.allocator() });
-    defer gpa.allocator().free(ldproc.stdout);
-    defer gpa.allocator().free(ldproc.stderr);
+    const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
+    defer allocator.free(ldproc.stdout);
+    defer allocator.free(ldproc.stderr);
 }
 
 /// Get file extension based on filename

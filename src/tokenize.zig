@@ -1,28 +1,41 @@
 const std = @import("std");
 
-const TokenError = error{UnknownToken};
+const TokenizeError = error{
+    UnknownToken,
+    UnexpectedEOF,
+};
+
 pub const TokenType = enum {
     ident,
     intLit,
-    ret,
+    exit,
     plus,
     minus,
     star,
     slash,
     semiCol,
-    nil,
 };
 
 pub const Token = union(TokenType) {
     ident: []const u8,
     intLit: i32,
-    ret,
+    exit,
     plus,
     minus,
     star,
     slash,
     semiCol,
-    nil,
+
+    pub fn fromChar(char: u8) !Token {
+        return switch (char) {
+            '+' => .plus,
+            '-' => .minus,
+            '*' => .star,
+            '/' => .slash,
+            ';' => .semiCol,
+            else => TokenizeError.UnknownToken,
+        };
+    }
 };
 
 pub fn checkType(tok: Token, comptime typ: TokenType) bool {
@@ -44,15 +57,20 @@ pub fn Iterator(comptime typ: type) type {
         }
 
         /// Get current item
+        pub fn peekAhead(self: Iterator(typ), ahead: u32) ?typ {
+            if (self.index + ahead >= self.items.len) return null;
+            return self.items[self.index + ahead];
+        }
+
         pub fn peek(self: Iterator(typ)) ?typ {
-            if (self.index >= self.items.len) return null;
-            return self.items[self.index];
+            return peekAhead(self, 0);
         }
 
         /// Get current item and iterate index
         pub fn consume(self: *Iterator(typ)) ?typ {
-            defer self.index += 1;
-            return self.peek();
+            const ret = self.peek();
+            self.index += 1;
+            return ret;
         }
         /// Get current item and iterate index
         pub const next = consume;
@@ -86,67 +104,44 @@ pub const Tokenizer = struct {
     }
 
     /// Returns an ArrayList of tokens
-    pub fn tokenize(self: *Tokenizer) !std.ArrayList(Token) {
-        var str = std.ArrayList(u8).init(self.allocator);
-        defer str.deinit();
+    pub fn tokenize(self: *Tokenizer) ![]Token {
+        var buff = std.ArrayList(u8).init(self.allocator);
+        defer buff.deinit();
 
         while (self.src.peek()) |char| {
-            switch (char) {
+            try switch (char) {
                 ' ', '\n', '\t' => self.src.skip(),
                 '0'...'9' => {
                     while (std.ascii.isDigit(self.src.peek().?))
-                        try str.append(self.src.consume().?);
+                        try buff.append(self.src.consume().?);
 
-                    const num: i32 = try std.fmt.parseInt(i32, str.items, 10);
+                    const num: i32 = try std.fmt.parseInt(i32, buff.items, 10);
                     try self.toks.append(.{ .intLit = num });
-                    str.deinit();
-                    str = std.ArrayList(u8).init(self.allocator);
+                    buff.clearAndFree();
                 },
                 'a'...'z', 'A'...'Z' => {
                     while (std.ascii.isAlphanumeric(self.src.peek().?))
-                        try str.append(self.src.consume().?);
-
-                    if (std.mem.eql(u8, "exit", str.items))
-                        try self.toks.append(.ret);
-                    str.deinit();
-                    str = std.ArrayList(u8).init(self.allocator);
+                        try buff.append(self.src.consume().?);
+                    if (std.mem.eql(u8, "exit", buff.items)) {
+                        try self.toks.append(.exit);
+                    } else return TokenizeError.UnknownToken;
+                    buff.clearAndFree();
                 },
-                ';' => {
-                    self.src.skip();
-                    try self.toks.append(.semiCol);
-                },
-                '+' => {
-                    self.src.skip();
-                    try self.toks.append(.plus);
-                },
-                '-' => {
-                    self.src.skip();
-                    try self.toks.append(.minus);
-                },
-                '*' => {
-                    self.src.skip();
-                    try self.toks.append(.star);
-                },
-                '/' => {
-                    self.src.skip();
-                    try self.toks.append(.slash);
-                },
-                else => {},
-            }
+                else => self.toks.append(try Token.fromChar(self.src.consume().?)),
+            };
         }
-        return self.toks;
+        return self.toks.items;
     }
 };
 
 test "Tokenize" {
-    std.testing.log_level = std.log.Level.info;
     const expect = std.testing.expect;
     const testSource: []const u8 = "exit 120 + 150 - 260 * 12 / 5;";
-    var toks = Tokenizer.init(std.testing.allocator, testSource);
-    defer toks.deinit();
-    const arrtoks = try toks.tokenize();
+    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
-        .ret,
+        .exit,
         .{ .intLit = 120 },
         .plus,
         .{ .intLit = 150 },
@@ -158,16 +153,16 @@ test "Tokenize" {
         .{ .intLit = 5 },
         .semiCol,
     };
-    for (arrtoks.items, expected) |act, exp| {
+    for (tokens, expected) |act, exp| {
         switch (act) {
-            .ret => |v| try expect(v == exp.ret),
+            .exit => |v| try expect(v == exp.exit),
             .intLit => |v| try expect(v == exp.intLit),
             .semiCol => |v| try expect(v == exp.semiCol),
             .plus => |v| try expect(v == exp.plus),
             .minus => |v| try expect(v == exp.minus),
             .star => |v| try expect(v == exp.star),
             .slash => |v| try expect(v == exp.slash),
-            else => {},
+            else => try expect(1 == 0),
         }
     }
 }
