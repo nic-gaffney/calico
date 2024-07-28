@@ -52,9 +52,8 @@ pub fn main() !void {
 
     // Codegen
     var generator = gen.Generator.init(allocator, tree);
+    defer generator.deinit();
     const code = try generator.generate();
-    std.debug.print("{s}", .{code});
-    defer allocator.free(code);
     try outWriter.writeAll(code);
 
     // Run nasm and ld to build the executable

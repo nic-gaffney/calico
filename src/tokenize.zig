@@ -159,9 +159,9 @@ pub const Tokenizer = struct {
     }
 };
 
-test "Tokenize" {
+test "Tokenize Expression" {
     const expect = std.testing.expect;
-    const testSource: []const u8 = "exit 120 + 150 - 260 * 12 / 5;";
+    const testSource: []const u8 = "exit 120 + 150 - 260 * 12 / 5 + variable;";
     var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
@@ -176,6 +176,8 @@ test "Tokenize" {
         .{ .intLit = 12 },
         .slash,
         .{ .intLit = 5 },
+        .plus,
+        .{ .ident = "variable" },
         .semiCol,
     };
     for (tokens, expected) |act, exp| {
@@ -187,6 +189,56 @@ test "Tokenize" {
             .minus => |v| try expect(v == exp.minus),
             .star => |v| try expect(v == exp.star),
             .slash => |v| try expect(v == exp.slash),
+            .ident => |v| try expect(std.mem.eql(u8, v, exp.ident)),
+            else => try expect(1 == 0),
+        }
+    }
+}
+
+test "Tokenize variable" {
+    const expect = std.testing.expect;
+    const testSource: []const u8 = "var five = 5;";
+    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const expected = &[_]Token{
+        .variable,
+        .{ .ident = "five" },
+        .equal,
+        .{ .intLit = 5 },
+        .semiCol,
+    };
+    for (tokens, expected) |act, exp| {
+        switch (act) {
+            .variable => |v| try expect(v == exp.variable),
+            .ident => |v| try expect(std.mem.eql(u8, exp.ident, v)),
+            .equal => |v| try expect(v == exp.equal),
+            .intLit => |v| try expect(v == exp.intLit),
+            .semiCol => |v| try expect(v == exp.semiCol),
+            else => try expect(1 == 0),
+        }
+    }
+}
+test "Tokenize constant" {
+    const expect = std.testing.expect;
+    const testSource: []const u8 = "const five = 5;";
+    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const expected = &[_]Token{
+        .constant,
+        .{ .ident = "five" },
+        .equal,
+        .{ .intLit = 5 },
+        .semiCol,
+    };
+    for (tokens, expected) |act, exp| {
+        switch (act) {
+            .constant => |v| try expect(v == exp.constant),
+            .ident => |v| try expect(std.mem.eql(u8, exp.ident, v)),
+            .equal => |v| try expect(v == exp.equal),
+            .intLit => |v| try expect(v == exp.intLit),
+            .semiCol => |v| try expect(v == exp.semiCol),
             else => try expect(1 == 0),
         }
     }

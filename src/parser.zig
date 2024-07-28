@@ -20,6 +20,12 @@ pub const NodeExpr = union(enum) {
 pub const NodeStmt = union(enum) {
     exit: NodeExit,
     value: NodeValue,
+    assign: NodeAssign,
+};
+
+pub const NodeAssign = struct {
+    ident: Token,
+    value: NodeExpr,
 };
 
 pub const NodeValue = struct {
@@ -78,7 +84,34 @@ pub const Parser = struct {
             .exit => NodeStmt{ .exit = try self.parseExit() },
             .constant => NodeStmt{ .value = try self.parseValue(true) },
             .variable => NodeStmt{ .value = try self.parseValue(false) },
+            .ident => NodeStmt{ .assign = try self.parseAssign() },
             else => ParsingError.InvalidStatement,
+        };
+    }
+
+    fn parseAssign(self: *Parser) !NodeAssign {
+        const ident = try self.tokens.consume(.ident);
+        var isMutable = false;
+        var exists = false;
+        for (self.nodes.items) |item| {
+            switch (item) {
+                .value => |v| {
+                    if (std.mem.eql(u8, v.ident.ident, ident.?.ident)) {
+                        isMutable = !v.isConst;
+                        exists = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        if (!exists) return error.UnknownIdentifier;
+        if (!isMutable) return error.ImmutableValue;
+        _ = try self.tokens.consume(.equal);
+        const expr = try self.parseExpr();
+        _ = try self.tokens.consume(.semiCol);
+        return NodeAssign{
+            .ident = ident.?,
+            .value = expr,
         };
     }
 

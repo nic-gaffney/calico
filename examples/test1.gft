@@ -1,1 +1,4 @@
-exit 7;
+const x = 1;
+var y = 4;
+y = 3;
+exit y;
