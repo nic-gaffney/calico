@@ -1,4 +1,4 @@
 const x = 1;
 var y = 4;
-y = 3;
+y = 7;
 exit y;

@@ -18,28 +18,42 @@ pub const Generator = struct {
         self.code.deinit();
     }
 
-    fn genExit(self: *Generator, expr: parse.NodeExpr) !void {
+    fn genExit(self: *Generator, exit: parse.NodeExit) !void {
+        const expr = exit.expr;
         const newCode =
-            switch (expr) {
-            .intLit => try std.fmt.allocPrint(self.allocator,
+            switch (expr.kind) {
+            .intLit => |intlit| try std.fmt.allocPrint(self.allocator,
                 \\  mov rax, 60
                 \\  mov rdi, {d}
                 \\  syscall
                 \\
             , .{
-                expr.intLit.intlit.intLit,
+                intlit.intlit.intLit,
             }),
-            .ident => try std.fmt.allocPrint(self.allocator,
+            .ident => |ident| try std.fmt.allocPrint(self.allocator,
                 \\  mov rax, 60
                 \\  mov rdi, [{s}]
                 \\  syscall
                 \\
             , .{
-                expr.ident.ident.ident,
+                ident.ident.ident,
             }),
         };
         try self.code.appendSlice(newCode);
         self.allocator.free(newCode);
+    }
+
+    fn genVar(self: *Generator, value: parse.NodeVar) !void {
+        const str = try std.fmt.allocPrint(self.allocator,
+            \\section .data
+            \\  {s}: dw {d}
+            \\
+        , .{ value.ident.ident, switch (value.expr.kind) {
+            .intLit => |intlit| intlit.intlit.intLit,
+            else => return error.NotImplemented,
+        } });
+        defer self.allocator.free(str);
+        try self.code.insertSlice(0, str);
     }
 
     fn genValue(self: *Generator, value: parse.NodeValue) !void {
@@ -47,8 +61,8 @@ pub const Generator = struct {
             \\section .data
             \\  {s}: dw {d}
             \\
-        , .{ value.ident.ident, switch (value.value) {
-            .intLit => value.value.intLit.intlit.intLit,
+        , .{ value.ident.ident, switch (value.expr.kind) {
+            .intLit => |intlit| intlit.intlit.intLit,
             else => return error.NotImplemented,
         } });
         defer self.allocator.free(str);
@@ -57,21 +71,21 @@ pub const Generator = struct {
 
     fn genAssign(self: *Generator, assign: parse.NodeAssign) !void {
         const newCode =
-            switch (assign.value) {
-            .intLit => try std.fmt.allocPrint(self.allocator,
+            switch (assign.expr.kind) {
+            .intLit => |intlit| try std.fmt.allocPrint(self.allocator,
                 \\  mov rax, {d}
                 \\  mov [{s}], rax
                 \\
             , .{
-                assign.value.intLit.intlit.intLit,
+                intlit.intlit.intLit,
                 assign.ident.ident,
             }),
-            .ident => try std.fmt.allocPrint(self.allocator,
+            .ident => |ident| try std.fmt.allocPrint(self.allocator,
                 \\  mov rax, [{s}]
                 \\  mov [{s}], rax
                 \\
             , .{
-                assign.value.ident.ident.ident,
+                ident.ident.ident,
                 assign.ident.ident,
             }),
         };
@@ -87,10 +101,11 @@ pub const Generator = struct {
             \\
         );
         for (self.root) |stmt| {
-            switch (stmt) {
-                .exit => try self.genExit(stmt.exit.expr),
-                .value => try self.genValue(stmt.value),
-                .assign => try self.genAssign(stmt.assign),
+            switch (stmt.kind) {
+                .exit => |exit| try self.genExit(exit),
+                .defValue => |defValue| try self.genValue(defValue),
+                .defVar => |defVar| try self.genVar(defVar),
+                .assignVar => |assign| try self.genAssign(assign),
             }
         }
         return self.code.items;

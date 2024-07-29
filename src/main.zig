@@ -2,6 +2,7 @@ const std = @import("std");
 const tok = @import("tokenize.zig");
 const parse = @import("parser.zig");
 const gen = @import("codegen.zig");
+const symb = @import("symtable.zig");
 
 pub fn main() !void {
     if (std.os.argv.len < 2) {
@@ -46,7 +47,9 @@ pub fn main() !void {
     const tokens = try tokenizer.tokenize();
 
     // Parse
-    var parser = parse.Parser.init(allocator, tokens);
+    var symbTable = try symb.SymbolTable.init(allocator);
+    defer symbTable.deinit();
+    var parser = parse.Parser.init(allocator, tokens, &symbTable);
     defer parser.deinit();
     const tree = try parser.parse();
 
