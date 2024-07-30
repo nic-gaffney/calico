@@ -1,0 +1,3 @@
+[submodule "vendors/llvm-zig"]
+	path = vendors/llvm-zig
+	url = https://github.com/dwclake/llvm-zig.git
