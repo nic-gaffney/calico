@@ -11,18 +11,22 @@ const ParsingError = error{
     ExpectedEqual,
     ExpectedIdentifier,
     InvalidStatement,
+    UnknownIdentifier,
+    UnknownToken,
+    UnexpectedEOF,
+    ExpectedToken,
+    OutOfMemory,
 };
 
 pub const Node = union(enum) {
     Expr: NodeExpr,
     Stmt: NodeStmt,
-
     pub fn children(self: Node, allocator: std.mem.Allocator) ![]Node {
         var childrenArray = std.ArrayList(Node).init(allocator);
         defer childrenArray.deinit();
         switch (self) {
-            .Expr => |expr| try childrenArray.appendSlice(try expr.children()),
-            .Stmt => |stmt| try childrenArray.appendSlice(try stmt.children()),
+            .Expr => |expr| try childrenArray.appendSlice(try expr.children(allocator)),
+            .Stmt => |stmt| try childrenArray.appendSlice(try stmt.children(allocator)),
         }
         return try childrenArray.toOwnedSlice();
     }
@@ -32,7 +36,7 @@ pub const NodeExpr = struct {
     id: u32,
     kind: ExprKind,
     symtable: *symb.SymbolTable,
-    typ: ?symb.SymbType,
+    typ: ?TypeIdent,
     isConst: bool,
 
     pub fn asNode(self: NodeExpr) Node {
@@ -49,6 +53,16 @@ pub const NodeExpr = struct {
     }
 };
 
+pub fn map(comptime T: type, comptime F: type, slice: []const F, func: fn (F) T) []const T {
+    var list: [64]T = undefined;
+    var max: usize = 0;
+    for (slice, 0..) |item, i| {
+        list[i] = func(item);
+        max = i + 1;
+    }
+    return list[0..max];
+}
+
 pub const NodeStmt = struct {
     id: u32,
     kind: StmtKind,
@@ -62,11 +76,15 @@ pub const NodeStmt = struct {
         var childrenArray = std.ArrayList(Node).init(allocator);
         defer childrenArray.deinit();
         switch (self.kind) {
-            .exit => |exit| try childrenArray.append(exit.expr.asNode()),
+            .exit => |exit| try childrenArray.append(exit.asNode()),
             .defValue => |value| try childrenArray.append(value.expr.asNode()),
             .defVar => |variable| try childrenArray.append(variable.expr.asNode()),
             .assignVar => |assign| try childrenArray.append(assign.expr.asNode()),
-            else => {},
+            .block => |block| {
+                const blockChildren = map(Node, NodeStmt, block, NodeStmt.asNode);
+                for (blockChildren) |child| try childrenArray.append(child);
+            },
+            .function => |fun| try childrenArray.append(fun.block.*.asNode()),
         }
         return try childrenArray.toOwnedSlice();
     }
@@ -96,39 +114,110 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *Parser) void {
+        for (self.nodes.items) |node| {
+            switch (node.kind) {
+                .block => |blk| self.allocator.free(blk),
+                .function => |fun| {
+                    self.allocator.free(fun.block.kind.block);
+                    self.allocator.destroy(fun.block);
+                },
+                else => {},
+            }
+        }
         self.nodes.deinit();
     }
 
     fn parseExpr(self: *Parser) !NodeExpr {
-        const kind = try switch (self.tokens.peek().?) {
-            .intLit => ExprKind{
-                .intLit = NodeIntlit{
-                    .intlit = (try self.tokens.consume(.intLit)).?,
+        var typ: ?TypeIdent = null;
+        const kind = try blk: {
+            try switch (self.tokens.peek().?) {
+                .intLit => {
+                    typ = TypeIdent{
+                        .ident = "i32",
+                        .list = false,
+                    };
+                    break :blk ExprKind{ .intLit = (try self.tokens.consume(.intLit)).? };
                 },
-            },
-            .ident => ExprKind{
-                .ident = NodeIdent{
-                    .ident = (try self.tokens.consume(.ident)).?,
+                .ident => {
+                    const ident = (try self.tokens.consume(.ident)).?;
+                    const symbType = if (self.top.get(ident.ident)) |sym|
+                        sym.Type
+                    else
+                        return ParsingError.UnknownIdentifier;
+                    typ = TypeIdent{
+                        .ident = symbType.toString(),
+                        .list = false,
+                    };
+                    break :blk ExprKind{ .ident = ident };
                 },
-            },
-            else => ParsingError.InvalidExpression,
+                else => break :blk ParsingError.InvalidExpression,
+            };
         };
         return NodeExpr{
             .id = self.reserveId(),
             .kind = kind,
             .isConst = kind.isConstant(),
-            .typ = null,
+            .typ = typ,
             .symtable = self.top,
         };
     }
 
-    fn parseStmt(self: *Parser) !NodeStmt {
+    fn parseStmt(self: *Parser) ParsingError!NodeStmt {
         return switch (self.tokens.peek().?) {
             .exit => try self.parseExit(),
             .constant => try self.parseConstant(),
             .variable => try self.parseVariable(),
             .ident => try self.parseAssign(),
+            .fun => try self.parseFunc(),
             else => ParsingError.InvalidStatement,
+        };
+    }
+
+    fn parseFunc(self: *Parser) ParsingError!NodeStmt {
+        var typ: ?TypeIdent = null;
+        _ = try self.tokens.consume(.fun);
+        const ident = (try self.tokens.consume(.ident)).?;
+        _ = try self.tokens.consume(.openParen);
+        //TODO: Argument Parsing
+        _ = try self.tokens.consume(.closeParen);
+        if (tok.checkType(self.tokens.peek().?, .arrow)) {
+            self.tokens.skip();
+            typ = TypeIdent{ .ident = (try self.tokens.consume(.ident)).?.ident, .list = false };
+        }
+
+        const block = try self.allocator.create(NodeStmt);
+        block.* = try self.parseBlock();
+
+        const kind = StmtKind{
+            .function = .{
+                .ident = ident,
+                .args = &[_]TypeIdent{},
+                .retType = typ,
+                .block = block,
+            },
+        };
+
+        return NodeStmt{
+            .id = self.reserveId(),
+            .kind = kind,
+            .symtable = self.top,
+        };
+    }
+
+    fn parseBlock(self: *Parser) !NodeStmt {
+        _ = try self.tokens.consume(.openBrace);
+        var stmtArr = std.ArrayList(NodeStmt).init(self.allocator);
+        while (!tok.checkType(self.tokens.peek().?, .closeBrace))
+            try stmtArr.append(try self.parseStmt());
+        _ = try self.tokens.consume(.closeBrace);
+        const kind = StmtKind{
+            .block = try stmtArr.toOwnedSlice(),
+        };
+
+        return NodeStmt{
+            .id = self.reserveId(),
+            .kind = kind,
+            .symtable = try self.top.makeChild(),
         };
     }
 
@@ -150,11 +239,11 @@ pub const Parser = struct {
         };
     }
 
-    fn parseExit(self: *Parser) !NodeStmt {
+    fn parseExit(self: *Parser) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.exit);
         const expr = try self.parseExpr();
         _ = try self.tokens.consume(.semiCol);
-        const kind = StmtKind{ .exit = NodeExit{ .expr = expr } };
+        const kind = StmtKind{ .exit = expr };
         return NodeStmt{
             .symtable = self.top,
             .kind = kind,
@@ -200,12 +289,28 @@ pub const Parser = struct {
         };
     }
 
-    pub fn parse(self: *Parser) ![]const NodeStmt {
+    pub fn parse(self: *Parser) !NodeStmt {
         while (self.tokens.peek()) |_|
             try self.nodes.append(try self.parseStmt());
 
-        return self.nodes.items;
+        return NodeStmt{
+            .id = self.reserveId(),
+            .kind = StmtKind{ .block = self.nodes.items },
+            .symtable = self.top,
+        };
     }
+};
+
+pub const TypeIdent = struct {
+    ident: []const u8,
+    list: bool,
+};
+
+pub const NodeFunction = struct {
+    ident: Token,
+    args: []const TypeIdent,
+    retType: ?TypeIdent,
+    block: *NodeStmt,
 };
 
 pub const NodeAssign = struct {
@@ -223,23 +328,18 @@ pub const NodeVar = struct {
     expr: NodeExpr,
 };
 
-pub const NodeExit = struct {
-    expr: NodeExpr,
-};
-
-pub const NodeIntlit = struct {
-    intlit: Token,
-};
-
-pub const NodeIdent = struct {
-    ident: Token,
-};
+pub const NodeExit = NodeExpr;
+pub const NodeIntlit = Token;
+pub const NodeIdent = Token;
+pub const NodeBlock = []const NodeStmt;
 
 pub const StmtKind = union(enum) {
+    function: NodeFunction,
     exit: NodeExit,
     defValue: NodeValue,
     defVar: NodeVar,
     assignVar: NodeAssign,
+    block: NodeBlock,
 };
 
 pub const ExprKind = union(enum) {
@@ -256,24 +356,36 @@ pub const ExprKind = union(enum) {
 
 test "Parser" {
     const expect = std.testing.expect;
-    const src = "exit 120;";
+    const src = "return 120;";
     var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
     defer tokenizer.deinit();
     const toks = try tokenizer.tokenize();
-    var parser = Parser.init(std.testing.allocator, toks);
+
+    var symbTable = try symb.SymbolTable.init(std.testing.allocator);
+    defer symbTable.deinit();
+
+    var parser = Parser.init(std.testing.allocator, toks, symbTable);
     defer parser.deinit();
     const parseTree = try parser.parse();
-    const exp: []const NodeStmt = &[_]NodeStmt{NodeStmt{
-        .exit = NodeExit{
-            .expr = NodeExpr{
-                .intLit = NodeIntlit{
-                    .intlit = Token{
-                        .intLit = 120,
+    const children = try parseTree.children(std.testing.allocator);
+    defer std.testing.allocator.free(children);
+    const exp: []const Node = &[_]Node{Node{
+        .Stmt = NodeStmt{
+            .id = 2,
+            .symtable = symbTable,
+            .kind = StmtKind{
+                .exit = NodeExpr{
+                    .id = 1,
+                    .kind = ExprKind{
+                        .intLit = Token{ .intLit = 120 },
                     },
+                    .symtable = symbTable,
+                    .typ = TypeIdent{ .list = false, .ident = "i32" },
+                    .isConst = true,
                 },
             },
         },
     }};
-    for (parseTree, exp) |stmt, expStmt|
+    for (children, exp) |stmt, expStmt|
         try expect(std.meta.eql(stmt, expStmt));
 }

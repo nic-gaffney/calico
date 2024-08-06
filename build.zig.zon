@@ -2,7 +2,12 @@
     .name = "calico",
     .version = "0.0.1",
 
-    .dependencies = .{},
+    .dependencies = .{
+        .@"llvm-zig" = .{
+            .url = "lib/llvm-zig/",
+            .hash = "12209e03a708a6d54551a1fc9fc9b94aa379bfe13e48087cf69529c5fd98ae443aa1",
+        },
+    },
     .paths = .{
         "",
     },

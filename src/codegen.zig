@@ -1,46 +1,72 @@
 const std = @import("std");
 const parse = @import("parser.zig");
+const symb = @import("symtable.zig");
+const llvm = @import("llvm");
+const analysis = llvm.analysis;
+const core = llvm.core;
+const target = llvm.target;
+const types = llvm.types;
+
+const CodegenError = error{
+    OutOfMemory,
+};
+
+fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable) types.LLVMTypeRef {
+    if (sym.getType(typ)) |t| {
+        return switch (t) {
+            .Integer => core.LLVMInt32Type(),
+            .Void => core.LLVMVoidType(),
+            else => core.LLVMVoidType(),
+        };
+    }
+    return core.LLVMVoidType();
+}
 
 pub const Generator = struct {
-    root: []const parse.NodeStmt,
+    root: parse.NodeStmt,
     allocator: std.mem.Allocator,
-    code: std.ArrayList(u8),
+    builder: types.LLVMBuilderRef,
+    context: types.LLVMContextRef,
+    module: types.LLVMModuleRef,
+    currentFunc: ?types.LLVMValueRef,
+    currentFuncIsVoid: bool,
 
-    pub fn init(allocator: std.mem.Allocator, stmts: []const parse.NodeStmt) Generator {
+    pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt) Generator {
+        _ = target.LLVMInitializeNativeTarget();
+        _ = target.LLVMInitializeNativeAsmPrinter();
+        _ = target.LLVMInitializeNativeAsmParser();
+
+        const context = core.LLVMContextCreate();
+        const builder = core.LLVMCreateBuilderInContext(context);
+        const module = core.LLVMModuleCreateWithNameInContext("_calico_start", context);
+
         return .{
-            .root = stmts,
+            .root = root,
             .allocator = allocator,
-            .code = std.ArrayList(u8).init(allocator),
+            .builder = builder,
+            .context = context,
+            .module = module,
+            .currentFunc = null,
+            .currentFuncIsVoid = false,
         };
     }
 
     pub fn deinit(self: *Generator) void {
-        self.code.deinit();
+        // Shutdown LLVM
+        defer core.LLVMShutdown();
+        defer core.LLVMDisposeModule(self.module);
+        defer core.LLVMDisposeBuilder(self.builder);
+
+        //self.code.deinit();
     }
 
     fn genExit(self: *Generator, exit: parse.NodeExit) !void {
-        const expr = exit.expr;
-        const newCode =
-            switch (expr.kind) {
-            .intLit => |intlit| try std.fmt.allocPrint(self.allocator,
-                \\  mov rax, 60
-                \\  mov rdi, {d}
-                \\  syscall
-                \\
-            , .{
-                intlit.intlit.intLit,
-            }),
-            .ident => |ident| try std.fmt.allocPrint(self.allocator,
-                \\  mov rax, 60
-                \\  mov rdi, [{s}]
-                \\  syscall
-                \\
-            , .{
-                ident.ident.ident,
-            }),
-        };
-        try self.code.appendSlice(newCode);
-        self.allocator.free(newCode);
+        const expr = exit;
+        const val = core.LLVMConstInt(core.LLVMInt32Type(), switch (expr.kind) {
+            .intLit => |i| @intCast(i.intLit),
+            .ident => unreachable,
+        }, 0);
+        _ = core.LLVMBuildRet(self.builder, val);
     }
 
     fn genVar(self: *Generator, value: parse.NodeVar) !void {
@@ -49,7 +75,7 @@ pub const Generator = struct {
             \\  {s}: dw {d}
             \\
         , .{ value.ident.ident, switch (value.expr.kind) {
-            .intLit => |intlit| intlit.intlit.intLit,
+            .intLit => |intlit| intlit.intLit,
             else => return error.NotImplemented,
         } });
         defer self.allocator.free(str);
@@ -62,7 +88,7 @@ pub const Generator = struct {
             \\  {s}: dw {d}
             \\
         , .{ value.ident.ident, switch (value.expr.kind) {
-            .intLit => |intlit| intlit.intlit.intLit,
+            .intLit => |intlit| intlit.intLit,
             else => return error.NotImplemented,
         } });
         defer self.allocator.free(str);
@@ -77,7 +103,7 @@ pub const Generator = struct {
                 \\  mov [{s}], rax
                 \\
             , .{
-                intlit.intlit.intLit,
+                intlit.intLit,
                 assign.ident.ident,
             }),
             .ident => |ident| try std.fmt.allocPrint(self.allocator,
@@ -85,7 +111,7 @@ pub const Generator = struct {
                 \\  mov [{s}], rax
                 \\
             , .{
-                ident.ident.ident,
+                ident.ident,
                 assign.ident.ident,
             }),
         };
@@ -93,46 +119,92 @@ pub const Generator = struct {
         self.allocator.free(newCode);
     }
 
+    fn genBlock(self: *Generator, block: []const parse.NodeStmt) CodegenError!void {
+        for (block) |stmt| try self.genStmt(stmt);
+    }
+
+    fn genFunc(self: *Generator, stmt: parse.NodeStmt) !void {
+        const fun = stmt.kind.function;
+        const table = stmt.symtable;
+        const block = fun.block;
+        const codeSlice = block.kind.block;
+        const funcName: [*:0]const u8 = try self.allocator.dupeZ(u8, fun.ident.ident);
+
+        const retType = toLLVMtype(fun.retType.?, table);
+        var params = [0]types.LLVMTypeRef{};
+        const funcType = core.LLVMFunctionType(retType, @ptrCast(&params), 0, 0);
+        const func = core.LLVMAddFunction(self.module, funcName, funcType);
+        self.currentFunc = func;
+        self.currentFuncIsVoid = switch (table.getType(fun.retType.?).?) {
+            .Void => true,
+            else => false,
+        };
+
+        const function: types.LLVMValueRef = self.currentFunc.?;
+        const codeBlock = core.LLVMAppendBasicBlockInContext(self.context, function, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, codeBlock);
+        const bodyTable = block.symtable;
+        _ = bodyTable;
+        //TODO: codegen for args
+
+        try self.genBlock(codeSlice);
+        _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
+    }
+
+    fn genStmt(self: *Generator, stmt: parse.NodeStmt) !void {
+        try switch (stmt.kind) {
+            .exit => |expr| self.genExit(expr),
+            .function => self.genFunc(stmt),
+            else => {},
+        };
+    }
+
     pub fn generate(self: *Generator) ![]const u8 {
-        try self.code.appendSlice(
-            \\section .text
-            \\  global _start
-            \\_start:
-            \\
-        );
-        for (self.root) |stmt| {
-            switch (stmt.kind) {
-                .exit => |exit| try self.genExit(exit),
-                .defValue => |defValue| try self.genValue(defValue),
-                .defVar => |defVar| try self.genVar(defVar),
-                .assignVar => |assign| try self.genAssign(assign),
-            }
-        }
-        return self.code.items;
+        try switch (self.root.kind) {
+            .block => |b| {
+                for (b) |stmt|
+                    try self.genStmt(stmt);
+            },
+            else => error.InvalidTop,
+        };
+        const string: []const u8 = std.mem.span(core.LLVMPrintModuleToString(self.module));
+        return string;
     }
 };
 
 test "Codegen exit" {
     const tok = @import("tokenize.zig");
     const expect = std.testing.expect;
-    const src = "exit 120;";
+    const main = @import("main.zig");
+
+    const src =
+        \\fn main() -> i32 {
+        \\    return 7;
+        \\}
+    ;
+    const expected =
+        \\; ModuleID = '_calico_start'
+        \\source_filename = "_calico_start"
+        \\
+        \\define i32 @main() {
+        \\entry:
+        \\  ret i32 7
+        \\}
+        \\
+    ;
     var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
     defer tokenizer.deinit();
     const toks = try tokenizer.tokenize();
-    var parser = parse.Parser.init(std.testing.allocator, toks);
+    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
+    defer symbTable.deinit();
+    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
     defer parser.deinit();
     const parseTree = try parser.parse();
+    var pop = symb.Populator.init(std.testing.allocator);
+    var treeNode = parseTree.asNode();
+    try pop.populateSymtable(&treeNode);
     var gen = Generator.init(std.testing.allocator, parseTree);
     defer gen.deinit();
     const actual = try gen.generate();
-    const expected =
-        \\section .text
-        \\  global _start
-        \\_start:
-        \\  mov rax, 60
-        \\  mov rdi, 120
-        \\  syscall
-        \\
-    ;
     try expect(std.mem.eql(u8, actual, expected));
 }

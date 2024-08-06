@@ -31,7 +31,7 @@ pub fn main() !void {
         if (err != error.PathAlreadyExists) return err;
 
     // Setup native code writer
-    const outFileName = try getFileName(allocator, out_name, "asm");
+    const outFileName = try getFileName(allocator, out_name, "ll");
     defer allocator.free(outFileName);
     const outfile = try std.fs.cwd().createFile(outFileName, .{});
     const outWriter = outfile.writer();
@@ -47,11 +47,15 @@ pub fn main() !void {
     const tokens = try tokenizer.tokenize();
 
     // Parse
-    var symbTable = try symb.SymbolTable.init(allocator);
+    var symbTable = try initSymbolTable(allocator);
     defer symbTable.deinit();
-    var parser = parse.Parser.init(allocator, tokens, &symbTable);
+
+    var parser = parse.Parser.init(allocator, tokens, symbTable);
     defer parser.deinit();
     const tree = try parser.parse();
+    var pop = symb.Populator.init(allocator);
+    var treeNode = tree.asNode();
+    try pop.populateSymtable(&treeNode);
 
     // Codegen
     var generator = gen.Generator.init(allocator, tree);
@@ -59,18 +63,9 @@ pub fn main() !void {
     const code = try generator.generate();
     try outWriter.writeAll(code);
 
-    // Run nasm and ld to build the executable
-    // TODO: switch to qbe or llvm (preferabbly qbe)
-    const nasmargv = [_][]const u8{ "nasm", "-felf64", outFileName };
-    const nasmproc = try std.process.Child.run(.{ .argv = &nasmargv, .allocator = allocator });
-    defer allocator.free(nasmproc.stdout);
-    defer allocator.free(nasmproc.stderr);
-
-    const ldFile = try getFileName(allocator, out_name, "o");
-    defer allocator.free(ldFile);
     const binFile = try getFileName(allocator, out_name, "");
     defer allocator.free(binFile);
-    const ldargv = [_][]const u8{ "ld", "-o", binFile, ldFile };
+    const ldargv = [_][]const u8{ "clang", "-o", binFile, outFileName };
     const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
     defer allocator.free(ldproc.stdout);
     defer allocator.free(ldproc.stderr);
@@ -81,4 +76,11 @@ inline fn getFileName(allocator: std.mem.Allocator, out_name: []const u8, fileTy
     var hasDot: []const u8 = ".";
     if (fileType.len == 0) hasDot = "";
     return try std.fmt.allocPrint(allocator, "calico-out/{s}{s}{s}", .{ out_name, hasDot, fileType });
+}
+
+pub fn initSymbolTable(allocator: std.mem.Allocator) !*symb.SymbolTable {
+    var table = try symb.SymbolTable.init(allocator);
+    const intSymb: symb.SymbType = symb.SymbType.Integer;
+    if (!try table.insert("i32", intSymb.toSymb())) return error.FailedToInsert;
+    return table;
 }

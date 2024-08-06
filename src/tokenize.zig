@@ -1,36 +1,57 @@
 const std = @import("std");
 
-const TokenizeError = error{
+pub const TokenizeError = error{
     UnknownToken,
     UnexpectedEOF,
+    ExpectedToken,
 };
 
 pub const TokenType = enum {
+    // Runtime Values
     ident,
     intLit,
+    // Keywords
     constant,
     variable,
     exit,
+    fun,
+    // Operators
     plus,
     minus,
     star,
     slash,
     semiCol,
     equal,
+    // Symbols
+    openBrace,
+    closeBrace,
+    openParen,
+    closeParen,
+    arrow,
 };
 
 pub const Token = union(TokenType) {
+    //RuntimeVar
     ident: []const u8,
     intLit: i32,
+    // Keywords
     constant,
     variable,
     exit,
+    fun,
+    // Operators
     plus,
     minus,
     star,
     slash,
     semiCol,
     equal,
+    // Symbols
+    openBrace,
+    closeBrace,
+    openParen,
+    closeParen,
+    arrow,
 
     pub fn fromChar(char: u8) !Token {
         return switch (char) {
@@ -40,15 +61,20 @@ pub const Token = union(TokenType) {
             '/' => .slash,
             ';' => .semiCol,
             '=' => .equal,
+            '{' => .openBrace,
+            '}' => .closeBrace,
+            '(' => .openParen,
+            ')' => .closeParen,
             else => TokenizeError.UnknownToken,
         };
     }
 
     pub fn fromStr(str: []const u8) Token {
         const eql = std.mem.eql;
-        if (eql(u8, str, "exit")) return .exit;
+        if (eql(u8, str, "return")) return .exit;
         if (eql(u8, str, "const")) return .constant;
         if (eql(u8, str, "var")) return .variable;
+        if (eql(u8, str, "fn")) return .fun;
         return Token{ .ident = str };
     }
 };
@@ -91,7 +117,7 @@ pub fn Iterator(comptime typ: type) type {
         pub fn consume(self: *Iterator(typ), comptime expected: TokenType) !?typ {
             if (typ != Token) return error.TokenIteratorOnly;
             if (!checkType(self.peek().?, expected))
-                return error.ExpectedToken;
+                return TokenizeError.ExpectedToken;
             return self.next();
         }
 
@@ -134,6 +160,15 @@ pub const Tokenizer = struct {
 
         while (self.src.peek()) |char| {
             try switch (char) {
+                '-' => {
+                    self.src.skip();
+                    if (self.src.peek().? != '>') {
+                        try self.toks.append(.minus);
+                        continue;
+                    }
+                    self.src.skip();
+                    try self.toks.append(.arrow);
+                },
                 ' ', '\n', '\t' => self.src.skip(),
                 '0'...'9' => {
                     while (std.ascii.isDigit(self.src.peek().?))
@@ -161,7 +196,7 @@ pub const Tokenizer = struct {
 
 test "Tokenize Expression" {
     const expect = std.testing.expect;
-    const testSource: []const u8 = "exit 120 + 150 - 260 * 12 / 5 + variable;";
+    const testSource: []const u8 = "return 120 + 150 - 260 * 12 / 5 + variable;";
     var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
@@ -219,6 +254,7 @@ test "Tokenize variable" {
         }
     }
 }
+
 test "Tokenize constant" {
     const expect = std.testing.expect;
     const testSource: []const u8 = "const five = 5;";
@@ -238,6 +274,46 @@ test "Tokenize constant" {
             .ident => |v| try expect(std.mem.eql(u8, exp.ident, v)),
             .equal => |v| try expect(v == exp.equal),
             .intLit => |v| try expect(v == exp.intLit),
+            .semiCol => |v| try expect(v == exp.semiCol),
+            else => try expect(1 == 0),
+        }
+    }
+}
+
+test "Tokenize Function" {
+    const expect = std.testing.expect;
+    const testSource: []const u8 =
+        \\fn main() -> i32 {
+        \\  return 7;
+        \\}
+    ;
+    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const expected = &[_]Token{
+        .fun,
+        .{ .ident = "main" },
+        .openParen,
+        .closeParen,
+        .arrow,
+        .{ .ident = "i32" },
+        .openBrace,
+        .exit,
+        .{ .intLit = 7 },
+        .semiCol,
+        .closeBrace,
+    };
+    for (tokens, expected) |act, exp| {
+        switch (act) {
+            .ident => |v| try expect(std.mem.eql(u8, exp.ident, v)),
+            .fun => |v| try expect(v == exp.fun),
+            .arrow => |v| try expect(v == exp.arrow),
+            .intLit => |v| try expect(v == exp.intLit),
+            .exit => |v| try expect(v == exp.exit),
+            .closeParen => |v| try expect(v == exp.closeParen),
+            .openParen => |v| try expect(v == exp.openParen),
+            .openBrace => |v| try expect(v == exp.openBrace),
+            .closeBrace => |v| try expect(v == exp.closeBrace),
             .semiCol => |v| try expect(v == exp.semiCol),
             else => try expect(1 == 0),
         }

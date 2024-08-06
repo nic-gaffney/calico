@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
 
     const optimize = b.standardOptimizeOption(.{});
@@ -12,7 +12,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const lib = b.addStaticLibrary(.{
+        .name = "llvm",
+        .root_source_file = b.path("lib/llvm-zig/src/llvm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib.defineCMacro("_FILE_OFFSET_BITS", "64");
+    lib.defineCMacro("__STDC_CONSTANT_MACROS", null);
+    lib.defineCMacro("__STDC_FORMAT_MACROS", null);
+    lib.defineCMacro("__STDC_LIMIT_MACROS", null);
+    lib.linkSystemLibrary("z");
+    lib.linkLibC();
+    lib.linkSystemLibrary("LLVM-17");
+
     b.installArtifact(exe);
+
+    b.installArtifact(lib);
+
+    _ = try b.modules.put("llvm", &lib.root_module);
+    exe.root_module.addImport("llvm", b.modules.get("llvm").?);
 
     const run_cmd = b.addRunArtifact(exe);
 
@@ -48,6 +67,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    codegen_unit_tests.root_module.addImport("llvm", &lib.root_module);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const run_token_unit_tests = b.addRunArtifact(token_unit_tests);
