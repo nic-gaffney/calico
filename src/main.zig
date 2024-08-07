@@ -58,7 +58,9 @@ pub fn main() !void {
     try pop.populateSymtable(&treeNode);
 
     // Codegen
-    var generator = gen.Generator.init(allocator, tree);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var generator = gen.Generator.init(arena.allocator(), tree);
     defer generator.deinit();
     const code = try generator.generate();
     try outWriter.writeAll(code);

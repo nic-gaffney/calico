@@ -196,6 +196,7 @@ pub const Populator = struct {
                         std.debug.print("Populated Function {s}\n", .{fun.ident.ident});
                         if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
                         const children = try stmt.children(self.allocator);
+                        defer self.allocator.free(children);
                         for (children) |child| try self.populateSymtable(&child);
                     },
 
@@ -221,17 +222,21 @@ pub const Populator = struct {
 
         const output = try self.allocator.create(SymbType);
         output.* = if (retType) |typ| table.getType(typ).? else SymbType.Void;
+        const typ = SymbType{
+            .Function = .{
+                .output = output,
+                .input = input,
+            },
+        };
+        const id = self.reserveId();
+
+        _ = try table.insert("func_" ++ .{@as(u8, @truncate(id))}, typ.toSymb());
 
         return Symbol{
             .Value = SymbValue{
                 .mut = true,
-                .id = self.reserveId(),
-                .typ = SymbType{
-                    .Function = .{
-                        .input = input,
-                        .output = output,
-                    },
-                },
+                .id = id,
+                .typ = typ,
             },
         };
     }
