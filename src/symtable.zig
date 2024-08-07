@@ -161,7 +161,6 @@ pub const Populator = struct {
                 const table: *SymbolTable = stmt.symtable;
                 switch (stmt.kind) {
                     .defVar => |variable| {
-                        std.debug.print("Populated {s}\n", .{variable.ident.ident});
                         const symbol: Symbol = try self.buildValueSymb(
                             table,
                             if (variable.expr.typ) |typ| typ else pars.TypeIdent{ .ident = "i32", .list = false },
@@ -175,15 +174,12 @@ pub const Populator = struct {
                             if (value.expr.typ) |typ| typ else pars.TypeIdent{ .ident = "i32", .list = false },
                             false,
                         );
-                        std.debug.print("Populated {s}\n", .{value.ident.ident});
                         if (!try table.insert(value.ident.ident, symbol)) return error.FailedToInsert;
                     },
                     .block => {
                         const children = try stmt.children(self.allocator);
                         defer self.allocator.free(children);
-                        std.debug.print("Populated Block\n", .{});
                         for (children) |child| {
-                            std.debug.print("Child: {d}\n", .{child.Stmt.id});
                             try self.populateSymtable(&child);
                         }
                     },
@@ -193,7 +189,6 @@ pub const Populator = struct {
                             fun.args,
                             fun.retType,
                         );
-                        std.debug.print("Populated Function {s}\n", .{fun.ident.ident});
                         if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
                         const children = try stmt.children(self.allocator);
                         defer self.allocator.free(children);

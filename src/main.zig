@@ -71,7 +71,6 @@ pub fn main() !void {
     const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
     defer allocator.free(ldproc.stdout);
     defer allocator.free(ldproc.stderr);
-    std.debug.print("code: \n{s}", .{code});
 }
 
 /// Get file extension based on filename
