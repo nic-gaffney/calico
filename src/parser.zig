@@ -140,12 +140,8 @@ pub const Parser = struct {
                 },
                 .ident => {
                     const ident = (try self.tokens.consume(.ident)).?;
-                    const symbType = if (self.top.get(ident.ident)) |sym|
-                        sym.Type
-                    else
-                        return ParsingError.UnknownIdentifier;
                     typ = TypeIdent{
-                        .ident = symbType.toString(),
+                        .ident = "i32",
                         .list = false,
                     };
                     break :blk ExprKind{ .ident = ident };

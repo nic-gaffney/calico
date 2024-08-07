@@ -8,6 +8,7 @@ const target = llvm.target;
 const types = llvm.types;
 
 const CodegenError = error{
+    Immutable,
     OutOfMemory,
 };
 
@@ -30,6 +31,7 @@ pub const Generator = struct {
     module: types.LLVMModuleRef,
     currentFunc: ?types.LLVMValueRef,
     currentFuncIsVoid: bool,
+    references: std.AutoHashMap(u32, types.LLVMValueRef),
 
     pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt) Generator {
         _ = target.LLVMInitializeNativeTarget();
@@ -48,6 +50,7 @@ pub const Generator = struct {
             .module = module,
             .currentFunc = null,
             .currentFuncIsVoid = false,
+            .references = std.AutoHashMap(u32, types.LLVMValueRef).init(allocator),
         };
     }
 
@@ -62,61 +65,63 @@ pub const Generator = struct {
 
     fn genExit(self: *Generator, exit: parse.NodeExit) !void {
         const expr = exit;
-        const val = core.LLVMConstInt(core.LLVMInt32Type(), switch (expr.kind) {
-            .intLit => |i| @intCast(i.intLit),
-            .ident => unreachable,
-        }, 0);
+        const val = self.genExpr(expr);
         _ = core.LLVMBuildRet(self.builder, val);
     }
 
-    fn genVar(self: *Generator, value: parse.NodeVar) !void {
-        const str = try std.fmt.allocPrint(self.allocator,
-            \\section .data
-            \\  {s}: dw {d}
-            \\
-        , .{ value.ident.ident, switch (value.expr.kind) {
-            .intLit => |intlit| intlit.intLit,
-            else => return error.NotImplemented,
-        } });
-        defer self.allocator.free(str);
-        try self.code.insertSlice(0, str);
+    fn genVar(self: *Generator, stmt: parse.NodeStmt) !void {
+        const nodeVar = stmt.kind.defVar;
+
+        const table = stmt.symtable;
+        const symbol = table.getValue(nodeVar.ident.ident).?;
+        const value = self.genExpr(nodeVar.expr);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table).?, nodeVar.ident.ident);
+        _ = core.LLVMBuildStore(self.builder, value, ptr);
+        try self.references.put(symbol.id, ptr);
     }
 
-    fn genValue(self: *Generator, value: parse.NodeValue) !void {
-        const str = try std.fmt.allocPrint(self.allocator,
-            \\section .data
-            \\  {s}: dw {d}
-            \\
-        , .{ value.ident.ident, switch (value.expr.kind) {
-            .intLit => |intlit| intlit.intLit,
-            else => return error.NotImplemented,
-        } });
-        defer self.allocator.free(str);
-        try self.code.insertSlice(0, str);
+    fn genValue(self: *Generator, stmt: parse.NodeStmt) !void {
+        const nodeVar = stmt.kind.defValue;
+
+        const table = stmt.symtable;
+        const symbol = table.getValue(nodeVar.ident.ident).?;
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
+        const value = self.genExpr(nodeVar.expr);
+        _ = core.LLVMBuildStore(self.builder, value, ptr);
+        try self.references.put(symbol.id, ptr);
     }
 
-    fn genAssign(self: *Generator, assign: parse.NodeAssign) !void {
-        const newCode =
-            switch (assign.expr.kind) {
-            .intLit => |intlit| try std.fmt.allocPrint(self.allocator,
-                \\  mov rax, {d}
-                \\  mov [{s}], rax
-                \\
-            , .{
-                intlit.intLit,
-                assign.ident.ident,
-            }),
-            .ident => |ident| try std.fmt.allocPrint(self.allocator,
-                \\  mov rax, [{s}]
-                \\  mov [{s}], rax
-                \\
-            , .{
-                ident.ident,
-                assign.ident.ident,
-            }),
+    fn genAlloc(self: *Generator, typ: types.LLVMTypeRef, ident: []const u8) !types.LLVMValueRef {
+        const builder = core.LLVMCreateBuilderInContext(self.context);
+
+        const entryFunc = self.currentFunc.?;
+        const entry = core.LLVMGetFirstBasicBlock(entryFunc).?;
+
+        if (core.LLVMGetFirstInstruction(entry)) |first| {
+            core.LLVMPositionBuilderBefore(builder, first);
+        } else {
+            core.LLVMPositionBuilderAtEnd(builder, entry);
+        }
+
+        const str: [*:0]const u8 = try self.allocator.dupeZ(u8, ident);
+        return core.LLVMBuildAlloca(builder, typ, str);
+    }
+
+    fn asBasicType(typ: symb.SymbType) ?types.LLVMTypeKind {
+        return switch (typ) {
+            .Integer => types.LLVMTypeKind.LLVMIntegerTypeKind,
+            else => null,
         };
-        try self.code.appendSlice(newCode);
-        self.allocator.free(newCode);
+    }
+
+    fn genAssign(self: *Generator, stmt: parse.NodeStmt) !void {
+        std.debug.print("assign\n", .{});
+        const table = stmt.symtable;
+        const symbol = table.get(stmt.kind.assignVar.ident.ident).?;
+        if (!symbol.Value.mut) return CodegenError.Immutable;
+        const ptr = self.references.get(symbol.Value.id).?;
+        const value = self.genExpr(stmt.kind.assignVar.expr);
+        _ = core.LLVMBuildStore(self.builder, value, ptr);
     }
 
     fn genBlock(self: *Generator, block: []const parse.NodeStmt) CodegenError!void {
@@ -155,7 +160,22 @@ pub const Generator = struct {
         try switch (stmt.kind) {
             .exit => |expr| self.genExit(expr),
             .function => self.genFunc(stmt),
+            .defValue => self.genValue(stmt),
+            .defVar => self.genVar(stmt),
+            .assignVar => self.genAssign(stmt),
             else => {},
+        };
+    }
+
+    fn genExpr(self: *Generator, expr: parse.NodeExpr) types.LLVMValueRef {
+        return switch (expr.kind) {
+            .ident => blk: {
+                const table = expr.symtable;
+                const symbol = table.getValue(expr.kind.ident.ident).?;
+                const ptr = self.references.get(symbol.id).?;
+                break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table), ptr, "");
+            },
+            .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
         };
     }
 

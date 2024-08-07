@@ -53,8 +53,8 @@ pub fn main() !void {
     var parser = parse.Parser.init(allocator, tokens, symbTable);
     defer parser.deinit();
     const tree = try parser.parse();
-    var pop = symb.Populator.init(allocator);
     var treeNode = tree.asNode();
+    var pop = symb.Populator.init(allocator);
     try pop.populateSymtable(&treeNode);
 
     // Codegen
@@ -69,6 +69,7 @@ pub fn main() !void {
     const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
     defer allocator.free(ldproc.stdout);
     defer allocator.free(ldproc.stderr);
+    std.debug.print("code: \n{s}", .{code});
 }
 
 /// Get file extension based on filename
