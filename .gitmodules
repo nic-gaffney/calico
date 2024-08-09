@@ -1,3 +1,0 @@
-[submodule "lib/llvm-zig"]
-	path = lib/llvm-zig
-	url = https://github.com/dwclake/llvm-zig
