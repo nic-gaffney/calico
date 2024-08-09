@@ -223,7 +223,9 @@ test "Codegen exit" {
     var pop = symb.Populator.init(std.testing.allocator);
     var treeNode = parseTree.asNode();
     try pop.populateSymtable(&treeNode);
-    var gen = Generator.init(std.testing.allocator, parseTree);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var gen = Generator.init(arena.allocator(), parseTree);
     defer gen.deinit();
     const actual = try gen.generate();
     try expect(std.mem.eql(u8, actual, expected));

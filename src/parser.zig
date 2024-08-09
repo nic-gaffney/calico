@@ -113,16 +113,30 @@ pub const Parser = struct {
         };
     }
 
+    fn dinitHelper(self: *Parser, node: NodeStmt) !void {
+        switch (node.kind) {
+            .block => |blk| {
+                const children = try node.children(self.allocator);
+                defer self.allocator.free(children);
+                for (children) |child| try self.dinitHelper(child.Stmt);
+                self.allocator.free(blk);
+                node.symtable.deinit();
+            },
+            .function => |fun| {
+                const children = try node.children(self.allocator);
+                defer self.allocator.free(children);
+                for (children) |child| try self.dinitHelper(child.Stmt);
+                self.allocator.destroy(fun.block);
+            },
+            else => {},
+        }
+    }
+
     pub fn deinit(self: *Parser) void {
         for (self.nodes.items) |node| {
-            switch (node.kind) {
-                .block => |blk| self.allocator.free(blk),
-                .function => |fun| {
-                    self.allocator.free(fun.block.kind.block);
-                    self.allocator.destroy(fun.block);
-                },
-                else => {},
-            }
+            self.dinitHelper(node) catch |err| {
+                if (err == error.OutOfMemory) {}
+            };
         }
         self.nodes.deinit();
     }
