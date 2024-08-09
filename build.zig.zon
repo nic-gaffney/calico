@@ -4,8 +4,8 @@
 
     .dependencies = .{
         .@"llvm-zig" = .{
-            .url = "lib/llvm-zig/",
-            .hash = "12207a7060e770193b2b894d2259b961f25d9ab04c03d69bcb0485c782b1b34b2200",
+            .url = "https://github.com/dwclake/llvm-zig/archive/refs/heads/main.zip",
+            .hash = "12203b7d504abd379ca74e8768f3d58bf6c2cff58dd75a5c55740b1945f2be8356f0",
         },
     },
     .paths = .{
