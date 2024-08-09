@@ -1,7 +1,6 @@
 fn main() -> i32 {
-    var poggies = 120;
-    poggies = 5;
-    const poggers = poggies;
-    poggies = 0;
-    return poggies;
+    const testval = 6;
+    var testvar = testval;
+    testvar = 5;
+    return testvar;
 }

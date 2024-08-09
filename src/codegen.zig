@@ -228,3 +228,79 @@ test "Codegen exit" {
     const actual = try gen.generate();
     try expect(std.mem.eql(u8, actual, expected));
 }
+
+test "Codegen assign" {
+    const tok = @import("tokenize.zig");
+    const expect = std.testing.expect;
+    const main = @import("main.zig");
+
+    const src =
+        \\fn main() -> i32 {
+        \\    const testval = 6;
+        \\    var testvar = testval;
+        \\    testvar = 5;
+        \\    return testvar;
+        \\}
+    ;
+    const expected =
+        \\; ModuleID = '_calico_start'
+        \\source_filename = "_calico_start"
+        \\
+        \\define i32 @main() {
+        \\entry:
+        \\  %testvar = alloca i32, align 4
+        \\  %testval = alloca i32, align 4
+        \\  store i32 6, ptr %testval, align 4
+        \\  %0 = load i32, ptr %testval, align 4
+        \\  store i32 %0, ptr %testvar, align 4
+        \\  store i32 5, ptr %testvar, align 4
+        \\  %1 = load i32, ptr %testvar, align 4
+        \\  ret i32 %1
+        \\}
+        \\
+    ;
+    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    defer tokenizer.deinit();
+    const toks = try tokenizer.tokenize();
+    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
+    defer symbTable.deinit();
+    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
+    defer parser.deinit();
+    const parseTree = try parser.parse();
+    var pop = symb.Populator.init(std.testing.allocator);
+    var treeNode = parseTree.asNode();
+    try pop.populateSymtable(&treeNode);
+    var gen = Generator.init(std.testing.allocator, parseTree);
+    defer gen.deinit();
+    const actual = try gen.generate();
+    try expect(std.mem.eql(u8, actual, expected));
+}
+
+test "Codegen assign constant" {
+    const tok = @import("tokenize.zig");
+    const main = @import("main.zig");
+
+    const src =
+        \\fn main() -> i32 {
+        \\    const testval = 6;
+        \\    const testvar = testval;
+        \\    testvar = 5;
+        \\    return testvar;
+        \\}
+    ;
+    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    defer tokenizer.deinit();
+    const toks = try tokenizer.tokenize();
+    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
+    defer symbTable.deinit();
+    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
+    defer parser.deinit();
+    const parseTree = try parser.parse();
+    var pop = symb.Populator.init(std.testing.allocator);
+    var treeNode = parseTree.asNode();
+    try pop.populateSymtable(&treeNode);
+    var gen = Generator.init(std.testing.allocator, parseTree);
+    defer gen.deinit();
+    const actual = gen.generate();
+    try std.testing.expectError(CodegenError.Immutable, actual);
+}
