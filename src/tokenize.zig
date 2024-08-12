@@ -4,17 +4,21 @@ pub const TokenizeError = error{
     UnknownToken,
     UnexpectedEOF,
     ExpectedToken,
+    TokenIteratorOnly,
 };
 
 pub const TokenType = enum {
     // Runtime Values
     ident,
+    stringLit,
     intLit,
+    charLit,
     // Keywords
     constant,
     variable,
     exit,
     fun,
+    import,
     // Operators
     plus,
     minus,
@@ -27,18 +31,25 @@ pub const TokenType = enum {
     closeBrace,
     openParen,
     closeParen,
+    openBracket,
+    closeBracket,
+    colon,
+    comma,
     arrow,
 };
 
 pub const Token = union(TokenType) {
     //RuntimeVar
     ident: []const u8,
+    stringLit: []const u8,
     intLit: i32,
+    charLit: u8,
     // Keywords
     constant,
     variable,
     exit,
     fun,
+    import,
     // Operators
     plus,
     minus,
@@ -51,6 +62,10 @@ pub const Token = union(TokenType) {
     closeBrace,
     openParen,
     closeParen,
+    openBracket,
+    closeBracket,
+    colon,
+    comma,
     arrow,
 
     pub fn fromChar(char: u8) !Token {
@@ -65,7 +80,14 @@ pub const Token = union(TokenType) {
             '}' => .closeBrace,
             '(' => .openParen,
             ')' => .closeParen,
-            else => TokenizeError.UnknownToken,
+            '[' => .openBracket,
+            ']' => .closeBracket,
+            ':' => .colon,
+            ',' => .comma,
+            else => {
+                // std.debug.print("{c}: ", .{char});
+                return TokenizeError.UnknownToken;
+            },
         };
     }
 
@@ -73,8 +95,9 @@ pub const Token = union(TokenType) {
         const eql = std.mem.eql;
         if (eql(u8, str, "return")) return .exit;
         if (eql(u8, str, "const")) return .constant;
-        if (eql(u8, str, "var")) return .variable;
+        if (eql(u8, str, "varbl")) return .variable;
         if (eql(u8, str, "fn")) return .fun;
+        if (eql(u8, str, "import")) return .import;
         return Token{ .ident = str };
     }
 };
@@ -114,10 +137,12 @@ pub fn Iterator(comptime typ: type) type {
             return ret;
         }
 
-        pub fn consume(self: *Iterator(typ), comptime expected: TokenType) !?typ {
-            if (typ != Token) return error.TokenIteratorOnly;
-            if (!checkType(self.peek().?, expected))
+        pub fn consume(self: *Iterator(typ), comptime expected: TokenType) error{ ExpectedToken, TokenIteratorOnly }!?typ {
+            if (typ != Token) return TokenizeError.TokenIteratorOnly;
+            if (!checkType(self.peek().?, expected)) {
+                // std.debug.print("Got {}, expected {}\n", .{ self.peek().?, expected });
                 return TokenizeError.ExpectedToken;
+            }
             return self.next();
         }
 
@@ -147,8 +172,10 @@ pub const Tokenizer = struct {
     /// Releases allocated memory
     pub fn deinit(self: *Tokenizer) void {
         for (self.toks.items) |token| {
-            if (checkType(token, TokenType.ident))
+            if (checkType(token, .ident))
                 self.allocator.free(token.ident);
+            if (checkType(token, .stringLit))
+                self.allocator.free(token.stringLit);
         }
         self.toks.deinit();
     }
@@ -185,6 +212,17 @@ pub const Tokenizer = struct {
                     const token = Token.fromStr(str);
                     try self.toks.append(token);
                     if (!checkType(token, TokenType.ident)) self.allocator.free(str);
+                    buff.clearAndFree();
+                },
+                '"' => {
+                    _ = self.src.next();
+                    while (self.src.peek().? != '"')
+                        try buff.append(self.src.next().?);
+
+                    _ = self.src.next();
+                    // std.debug.print("{c}\n", .{self.src.peek().?});
+                    const token = Token{ .stringLit = try buff.toOwnedSlice() };
+                    try self.toks.append(token);
                     buff.clearAndFree();
                 },
                 else => self.toks.append(try Token.fromChar(self.src.next().?)),

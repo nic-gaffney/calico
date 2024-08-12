@@ -12,10 +12,12 @@ const CodegenError = error{
     OutOfMemory,
 };
 
-fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable) types.LLVMTypeRef {
+fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable, expr: ?parse.NodeExpr) types.LLVMTypeRef {
+    _ = expr;
     if (sym.getType(typ)) |t| {
         return switch (t) {
             .Integer => core.LLVMInt32Type(),
+            .String => core.LLVMPointerType(core.LLVMInt8Type(), 0),
             .Void => core.LLVMVoidType(),
             else => core.LLVMVoidType(),
         };
@@ -32,15 +34,16 @@ pub const Generator = struct {
     currentFunc: ?types.LLVMValueRef,
     currentFuncIsVoid: bool,
     references: std.AutoHashMap(u32, types.LLVMValueRef),
+    stringId: u32,
 
-    pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt) Generator {
+    pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt, filename: [*:0]const u8) Generator {
         _ = target.LLVMInitializeNativeTarget();
         _ = target.LLVMInitializeNativeAsmPrinter();
         _ = target.LLVMInitializeNativeAsmParser();
 
         const context = core.LLVMContextCreate();
         const builder = core.LLVMCreateBuilderInContext(context);
-        const module = core.LLVMModuleCreateWithNameInContext("_calico_start", context);
+        const module = core.LLVMModuleCreateWithNameInContext(filename, context);
 
         return .{
             .root = root,
@@ -51,6 +54,7 @@ pub const Generator = struct {
             .currentFunc = null,
             .currentFuncIsVoid = false,
             .references = std.AutoHashMap(u32, types.LLVMValueRef).init(allocator),
+            .stringId = 0,
         };
     }
 
@@ -65,7 +69,7 @@ pub const Generator = struct {
 
     fn genExit(self: *Generator, exit: parse.NodeExit) !void {
         const expr = exit;
-        const val = self.genExpr(expr);
+        const val = try self.genExpr(expr);
         _ = core.LLVMBuildRet(self.builder, val);
     }
 
@@ -74,8 +78,8 @@ pub const Generator = struct {
 
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
-        const value = self.genExpr(nodeVar.expr);
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table).?, nodeVar.ident.ident);
+        const value = try self.genExpr(nodeVar.expr);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table, nodeVar.expr).?, nodeVar.ident.ident);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
     }
@@ -85,8 +89,8 @@ pub const Generator = struct {
 
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
-        const value = self.genExpr(nodeVar.expr);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table, nodeVar.expr), nodeVar.ident.ident);
+        const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
     }
@@ -115,12 +119,12 @@ pub const Generator = struct {
     }
 
     fn genAssign(self: *Generator, stmt: parse.NodeStmt) !void {
-        std.debug.print("assign\n", .{});
+        // std.debug.print("assign\n", .{});
         const table = stmt.symtable;
         const symbol = table.get(stmt.kind.assignVar.ident.ident).?;
         if (!symbol.Value.mut) return CodegenError.Immutable;
         const ptr = self.references.get(symbol.Value.id).?;
-        const value = self.genExpr(stmt.kind.assignVar.expr);
+        const value = try self.genExpr(stmt.kind.assignVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
     }
 
@@ -129,31 +133,48 @@ pub const Generator = struct {
     }
 
     fn genFunc(self: *Generator, stmt: parse.NodeStmt) !void {
+        self.references.clearAndFree();
         const fun = stmt.kind.function;
-        const table = stmt.symtable;
-        const block = fun.block;
-        const codeSlice = block.kind.block;
+        var table: *symb.SymbolTable = stmt.symtable;
+        var block: *parse.NodeStmt = undefined;
+        var codeSlice: []const parse.NodeStmt = undefined;
+        if (fun.block != null) {
+            table = fun.block.?.symtable;
+            block = fun.block.?;
+            codeSlice = block.kind.block;
+        }
         const funcName: [*:0]const u8 = try self.allocator.dupeZ(u8, fun.ident.ident);
 
-        const retType = toLLVMtype(fun.retType.?, table);
-        var params = [0]types.LLVMTypeRef{};
-        const funcType = core.LLVMFunctionType(retType, @ptrCast(&params), 0, 0);
+        const retType = toLLVMtype(fun.retType.?, table, null);
+        var params = std.ArrayList(types.LLVMTypeRef).init(self.allocator);
+        for (fun.args) |arg| {
+            try params.append(toLLVMtype(arg.typ, table, null));
+        }
+
+        const funcType = core.LLVMFunctionType(retType, @ptrCast(params.items), @intCast(params.items.len), 0);
         const func = core.LLVMAddFunction(self.module, funcName, funcType);
-        self.currentFunc = func;
-        self.currentFuncIsVoid = switch (table.getType(fun.retType.?).?) {
-            .Void => true,
-            else => false,
-        };
+        for (fun.args, 0..) |arg, i| {
+            const symbol = table.get(arg.ident).?;
+            const ptr: types.LLVMValueRef = core.LLVMGetParam(func, @intCast(i));
+            try self.references.put(symbol.Value.id, ptr);
+        }
 
-        const function: types.LLVMValueRef = self.currentFunc.?;
-        const codeBlock = core.LLVMAppendBasicBlockInContext(self.context, function, "entry");
-        core.LLVMPositionBuilderAtEnd(self.builder, codeBlock);
-        const bodyTable = block.symtable;
-        _ = bodyTable;
-        //TODO: codegen for args
+        if (fun.block != null) {
+            self.currentFunc = func;
+            self.currentFuncIsVoid = switch (table.getType(fun.retType.?).?) {
+                .Void => true,
+                else => false,
+            };
 
-        try self.genBlock(codeSlice);
-        _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
+            const function: types.LLVMValueRef = func;
+            const codeBlock = core.LLVMAppendBasicBlockInContext(self.context, function, "entry");
+            core.LLVMPositionBuilderAtEnd(self.builder, codeBlock);
+            const bodyTable = block.symtable;
+            _ = bodyTable;
+
+            try self.genBlock(codeSlice);
+            _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
+        }
     }
 
     fn genStmt(self: *Generator, stmt: parse.NodeStmt) !void {
@@ -163,19 +184,74 @@ pub const Generator = struct {
             .defValue => self.genValue(stmt),
             .defVar => self.genVar(stmt),
             .assignVar => self.genAssign(stmt),
+            .expr => |expression| {
+                _ = try self.genExpr(expression);
+            },
+
             else => {},
         };
     }
 
-    fn genExpr(self: *Generator, expr: parse.NodeExpr) types.LLVMValueRef {
+    fn genExpr(self: *Generator, expr: parse.NodeExpr) !types.LLVMValueRef {
         return switch (expr.kind) {
-            .ident => blk: {
+            .ident => |id| blk: {
+                // std.debug.print("getValue({s})\n", .{id.ident});
                 const table = expr.symtable;
-                const symbol = table.getValue(expr.kind.ident.ident).?;
+
+                // std.debug.print("\n\nEXPERTABLE\n\n", .{});
+                // var iterTable = table.scope.?.symbs.iterator();
+                // while (iterTable.next()) |entry| {
+                //     // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                // }
+                // std.debug.print("\n\nEXPERTABLE\n\n", .{});
+                const symbol = table.getValue(id.ident).?;
                 const ptr = self.references.get(symbol.id).?;
-                break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table), ptr, "");
+                if (core.LLVMIsAArgument(ptr)) |_|
+                    break :blk ptr;
+
+                break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table, expr), ptr, "");
             },
             .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
+            .stringLit => |str| blk: {
+                const vref = core.LLVMAddGlobal(
+                    self.module,
+                    core.LLVMArrayType(core.LLVMInt8Type(), @intCast(str.stringLit.len + 1)),
+                    try self.allocator.dupeZ(u8, try std.fmt.allocPrint(
+                        self.allocator,
+                        ".str.{d}",
+                        .{self.stringId},
+                    )),
+                );
+                self.stringId += 1;
+                const sref = core.LLVMConstString(try self.allocator.dupeZ(u8, str.stringLit), @intCast(str.stringLit.len), 0);
+                core.LLVMSetInitializer(vref, sref);
+                core.LLVMSetGlobalConstant(vref, 1);
+                core.LLVMSetLinkage(vref, .LLVMPrivateLinkage);
+                core.LLVMSetUnnamedAddr(vref, 1);
+                break :blk vref;
+            },
+
+            .call => |call| blk: {
+                const ident = try self.allocator.dupeZ(u8, call.ident.ident);
+                const function = core.LLVMGetNamedFunction(self.module, ident);
+                var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
+                for (call.args) |arg|
+                    try args.append(try self.genExpr(arg));
+                const funcType = core.LLVMGlobalGetValueType(function);
+                // std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
+
+                const llvmCall = core.LLVMBuildCall2(
+                    self.builder,
+                    funcType,
+                    function,
+                    @ptrCast(args.items),
+                    @intCast(call.args.len),
+                    ident,
+                );
+                // std.debug.print("CALL\n", .{});
+
+                break :blk llvmCall;
+            },
         };
     }
 

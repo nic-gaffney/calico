@@ -1,6 +1,6 @@
-fn main() -> i32 {
-    const testval = 6;
-    var testvar = testval;
-    testvar = 5;
-    return testvar;
+import fn puts(str: [u8]) -> i32;
+
+fn main(argc: i32) -> i32 {
+    puts("Hello World!");
+    return 0;
 }

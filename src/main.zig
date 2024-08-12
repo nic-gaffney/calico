@@ -47,22 +47,27 @@ pub fn main() !void {
     const tokens = try tokenizer.tokenize();
 
     // Parse
-    var symbTable = try initSymbolTable(allocator);
-    defer symbTable.deinit();
-
-    var parser = parse.Parser.init(allocator, tokens, symbTable);
-    defer parser.deinit();
-    const tree = try parser.parse();
-    var treeNode = tree.asNode();
-    var pop = symb.Populator.init(allocator);
-    try pop.populateSymtable(&treeNode);
-
-    // Codegen
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var generator = gen.Generator.init(arena.allocator(), tree);
+    const symbTable = try initSymbolTable(arena.allocator());
+
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    // var iter = symbTable.scope.?.symbs.iterator();
+    // while (iter.next()) |entry| {
+    // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+    // }
+
+    // Codegen
+    const fname = try allocator.dupeZ(u8, inputFileName.?);
+    defer allocator.free(fname);
+    var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
     defer generator.deinit();
     const code = try generator.generate();
+    std.debug.print("{s}\n", .{code});
     try outWriter.writeAll(code);
 
     const binFile = try getFileName(allocator, out_name, "");
@@ -83,6 +88,10 @@ inline fn getFileName(allocator: std.mem.Allocator, out_name: []const u8, fileTy
 pub fn initSymbolTable(allocator: std.mem.Allocator) !*symb.SymbolTable {
     var table = try symb.SymbolTable.init(allocator);
     const intSymb: symb.SymbType = symb.SymbType.Integer;
+    const charSymb: symb.SymbType = symb.SymbType.Character;
+    const strSymb: symb.SymbType = symb.SymbType.String;
     if (!try table.insert("i32", intSymb.toSymb())) return error.FailedToInsert;
+    if (!try table.insert("u8", charSymb.toSymb())) return error.FailedToInsert;
+    if (!try table.insert("[u8]", strSymb.toSymb())) return error.FailedToInsert;
     return table;
 }

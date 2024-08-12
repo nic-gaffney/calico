@@ -14,6 +14,7 @@ pub const Symbol = union(enum) {
 pub const SymbType = union(enum) {
     Void,
     Integer,
+    Character,
     String,
     Function: struct {
         input: []const SymbType,
@@ -25,6 +26,7 @@ pub const SymbType = union(enum) {
     pub fn toString(self: SymbType) []const u8 {
         return switch (self) {
             .Integer => "i32",
+            .Character => "u8",
             else => "void",
         };
     }
@@ -40,6 +42,7 @@ pub const SymbValue = struct {
 };
 
 pub const SymbolTable = struct {
+    par: ?*SymbolTable,
     scope: ?*Scope = null,
     allocator: std.mem.Allocator,
 
@@ -49,6 +52,7 @@ pub const SymbolTable = struct {
         scope.symbs = std.StringHashMap(Symbol).init(allocator);
         const table = try allocator.create(SymbolTable);
         table.* = SymbolTable{
+            .par = null,
             .scope = scope,
             .allocator = allocator,
         };
@@ -79,9 +83,10 @@ pub const SymbolTable = struct {
     pub fn makeChild(self: *SymbolTable) !*SymbolTable {
         const scope = try self.allocator.create(Scope);
         scope.par = self.scope;
-        scope.symbs = std.StringHashMap(Symbol).init(self.allocator);
+        scope.symbs = try self.scope.?.symbs.clone();
         const stable: *SymbolTable = try self.allocator.create(SymbolTable);
         stable.* = .{
+            .par = self,
             .scope = scope,
             .allocator = self.allocator,
         };
@@ -89,9 +94,8 @@ pub const SymbolTable = struct {
     }
 
     pub fn parent(self: SymbolTable) ?*SymbolTable {
-        if (self.scope) |scope|
-            if (scope.par) |par|
-                return par;
+        if (self.par) |par|
+            return par;
         return null;
     }
 
@@ -130,6 +134,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn insert(self: *SymbolTable, ident: []const u8, symbol: Symbol) !bool {
+        // std.debug.print("Inserted {s} as {any}\n", .{ ident, symbol });
         if (self.scope) |scope| {
             if (scope.symbs.getEntry(ident)) |_| return false;
             try scope.symbs.put(ident, symbol);
@@ -150,7 +155,7 @@ pub const Populator = struct {
 
     pub fn init(allocator: std.mem.Allocator) Populator {
         return .{
-            .id = 0,
+            .id = 1,
             .allocator = allocator,
         };
     }
@@ -179,20 +184,29 @@ pub const Populator = struct {
                     .block => {
                         const children = try stmt.children(self.allocator);
                         defer self.allocator.free(children);
-                        for (children) |child| {
-                            try self.populateSymtable(&child);
-                        }
+                        for (children) |child| try self.populateSymtable(&child);
                     },
                     .function => |fun| {
+                        const bodyTable = if (fun.block == null) stmt.symtable else fun.block.?.symtable;
                         const symbol: Symbol = try self.buildFunctionSymb(
-                            table,
+                            bodyTable,
                             fun.args,
                             fun.retType,
                         );
                         if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
-                        const children = try stmt.children(self.allocator);
-                        defer self.allocator.free(children);
-                        for (children) |child| try self.populateSymtable(&child);
+                        if (fun.block == null) return;
+                        // var iter = fun.block.?.symtable.scope.?.symbs.iterator();
+                        // while (iter.next()) |val| {
+                        //     // std.debug.print("{s}\n", .{val.key_ptr.*});
+                        // }
+
+                        const block = fun.block.?.asNode();
+                        try self.populateSymtable(&block);
+
+                        // var iterTable = bodyTable.scope.?.symbs.iterator();
+                        // while (iterTable.next()) |entry| {
+                        //     // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                        // }
                     },
 
                     else => {},
@@ -208,11 +222,16 @@ pub const Populator = struct {
     fn buildFunctionSymb(
         self: *Populator,
         table: *SymbolTable,
-        args: []const pars.TypeIdent,
+        args: []const pars.FunctionArg,
         retType: ?pars.TypeIdent,
     ) !Symbol {
         var inputArr = std.ArrayList(SymbType).init(self.allocator);
-        for (args) |arg| try inputArr.append(table.getType(arg) orelse SymbType.Void);
+        for (args) |arg| {
+            // std.debug.print("{s}: {s}\n", .{ arg.ident, arg.typ.ident });
+            const argSymb = try self.buildValueSymb(table, arg.typ, false);
+            if (!try table.insert(arg.ident, argSymb)) return error.FailedToInsert;
+            try inputArr.append(table.getType(arg.typ) orelse SymbType.Void);
+        }
         const input = try inputArr.toOwnedSlice();
 
         const output = try self.allocator.create(SymbType);
@@ -225,7 +244,8 @@ pub const Populator = struct {
         };
         const id = self.reserveId();
 
-        _ = try table.insert("func_" ++ .{@as(u8, @truncate(id))}, typ.toSymb());
+        const name = try std.fmt.allocPrint(self.allocator, "func_{d}", .{id});
+        _ = try table.insert(name, typ.toSymb());
 
         return Symbol{
             .Value = SymbValue{
@@ -245,6 +265,7 @@ pub const Populator = struct {
             };
             return value.toSymb();
         }
+        // std.debug.print("{s}: ", .{typ.ident});
         return error.UnknownType;
     }
 };
