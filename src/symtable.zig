@@ -23,10 +23,21 @@ pub const SymbType = union(enum) {
     pub fn toSymb(self: SymbType) Symbol {
         return Symbol{ .Type = self };
     }
-    pub fn toString(self: SymbType) []const u8 {
+    pub fn toString(self: SymbType, allocator: std.mem.Allocator) ![]const u8 {
         return switch (self) {
             .Integer => "i32",
             .Character => "u8",
+            .String => "[u8]",
+            .Function => |fun| blk: {
+                const output = try fun.output.toString(allocator);
+                var argstring: []const u8 = "";
+                if (fun.input.len != 0) {
+                    argstring = try fun.input[0].toString(allocator);
+                    for (1..fun.input.len) |i|
+                        argstring = try std.mem.join(allocator, ", ", &[_][]const u8{ argstring, try fun.input[i].toString(allocator) });
+                }
+                break :blk try std.fmt.allocPrint(allocator, "fn({s})->{s}", .{ argstring, output });
+            },
             else => "void",
         };
     }
@@ -105,7 +116,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn get(self: SymbolTable, ident: []const u8) ?Symbol {
-        if (self.scope) |scope| return scope.symbs.get(ident);
+        if (self.scope) |scope| return scope.symbs.get(ident) orelse if (self.parent()) |par| par.get(ident) else null;
         return null;
     }
 
@@ -193,20 +204,12 @@ pub const Populator = struct {
                             fun.args,
                             fun.retType,
                         );
-                        if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
-                        if (fun.block == null) return;
-                        // var iter = fun.block.?.symtable.scope.?.symbs.iterator();
-                        // while (iter.next()) |val| {
-                        //     // std.debug.print("{s}\n", .{val.key_ptr.*});
-                        // }
 
+                        if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
+                        std.debug.print("Function {s} inserted\n", .{fun.ident.ident});
+                        if (fun.block == null) return;
                         const block = fun.block.?.asNode();
                         try self.populateSymtable(&block);
-
-                        // var iterTable = bodyTable.scope.?.symbs.iterator();
-                        // while (iterTable.next()) |entry| {
-                        //     // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-                        // }
                     },
 
                     else => {},
@@ -243,8 +246,15 @@ pub const Populator = struct {
             },
         };
         const id = self.reserveId();
+        var argstring: []const u8 = "";
+        if (input.len != 0) {
+            argstring = try input[0].toString(self.allocator);
+            for (1..input.len) |i|
+                argstring = try std.mem.join(self.allocator, ",", &[_][]const u8{ argstring, try input[i].toString(self.allocator) });
+        }
 
-        const name = try std.fmt.allocPrint(self.allocator, "func_{d}", .{id});
+        const name = try std.fmt.allocPrint(self.allocator, "fn({s})->{s}", .{ argstring, try output.toString(self.allocator) });
+        std.debug.print("Function type => \"{s}\"\n", .{name});
         _ = try table.insert(name, typ.toSymb());
 
         return Symbol{

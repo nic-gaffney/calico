@@ -67,7 +67,7 @@ pub fn main() !void {
     var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
     defer generator.deinit();
     const code = try generator.generate();
-    std.debug.print("{s}\n", .{code});
+    // std.debug.print("{s}\n", .{code});
     try outWriter.writeAll(code);
 
     const binFile = try getFileName(allocator, out_name, "");

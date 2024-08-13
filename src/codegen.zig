@@ -10,6 +10,7 @@ const types = llvm.types;
 const CodegenError = error{
     Immutable,
     OutOfMemory,
+    IncorrectType,
 };
 
 fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable, expr: ?parse.NodeExpr) types.LLVMTypeRef {
@@ -232,11 +233,16 @@ pub const Generator = struct {
             },
 
             .call => |call| blk: {
+                std.debug.print("Function {s} requested\n", .{call.ident.ident});
+
+                const functype = expr.symtable.getValue(call.ident.ident).?.typ.Function;
                 const ident = try self.allocator.dupeZ(u8, call.ident.ident);
                 const function = core.LLVMGetNamedFunction(self.module, ident);
                 var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
-                for (call.args) |arg|
+                for (call.args, functype.input) |arg, intype| {
+                    if (!std.meta.eql(expr.symtable.getType(arg.typ.?).?, intype)) return CodegenError.IncorrectType;
                     try args.append(try self.genExpr(arg));
+                }
                 const funcType = core.LLVMGlobalGetValueType(function);
                 // std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
 
