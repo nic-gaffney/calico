@@ -140,7 +140,6 @@ pub fn Iterator(comptime typ: type) type {
         pub fn consume(self: *Iterator(typ), comptime expected: TokenType) error{ ExpectedToken, TokenIteratorOnly }!?typ {
             if (typ != Token) return TokenizeError.TokenIteratorOnly;
             if (!checkType(self.peek().?, expected)) {
-                // std.debug.print("Got {}, expected {}\n", .{ self.peek().?, expected });
                 return TokenizeError.ExpectedToken;
             }
             return self.next();
@@ -235,7 +234,10 @@ pub const Tokenizer = struct {
 test "Tokenize Expression" {
     const expect = std.testing.expect;
     const testSource: []const u8 = "return 120 + 150 - 260 * 12 / 5 + variable;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -270,8 +272,11 @@ test "Tokenize Expression" {
 
 test "Tokenize variable" {
     const expect = std.testing.expect;
-    const testSource: []const u8 = "var five = 5;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    const testSource: []const u8 = "varbl five = 5;";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -296,7 +301,10 @@ test "Tokenize variable" {
 test "Tokenize constant" {
     const expect = std.testing.expect;
     const testSource: []const u8 = "const five = 5;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -325,7 +333,10 @@ test "Tokenize Function" {
         \\  return 7;
         \\}
     ;
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{

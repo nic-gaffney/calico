@@ -80,7 +80,7 @@ pub const Generator = struct {
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
         const value = try self.genExpr(nodeVar.expr);
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table, nodeVar.expr).?, nodeVar.ident.ident);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.symtable.getValue(nodeVar.ident.ident).?.typ.toTypeIdent(self.allocator), table, nodeVar.expr).?, nodeVar.ident.ident);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
     }
@@ -210,7 +210,16 @@ pub const Generator = struct {
                 if (core.LLVMIsAArgument(ptr)) |_|
                     break :blk ptr;
 
-                break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table, expr), ptr, "");
+                break :blk core.LLVMBuildLoad2(
+                    self.builder,
+                    toLLVMtype(
+                        expr.typ orelse try table.getValue(id.ident).?.typ.toTypeIdent(self.allocator),
+                        table,
+                        expr,
+                    ),
+                    ptr,
+                    "",
+                );
             },
             .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
             .stringLit => |str| blk: {
@@ -294,23 +303,22 @@ test "Codegen exit" {
         \\}
         \\
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
-    defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
-    try pop.populateSymtable(&treeNode);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var gen = Generator.init(arena.allocator(), parseTree);
-    defer gen.deinit();
-    const actual = try gen.generate();
-    try expect(std.mem.eql(u8, actual, expected));
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }
 
 test "Codegen assign" {
@@ -321,7 +329,7 @@ test "Codegen assign" {
     const src =
         \\fn main() -> i32 {
         \\    const testval = 6;
-        \\    var testvar = testval;
+        \\    varbl testvar = testval;
         \\    testvar = 5;
         \\    return testvar;
         \\}
@@ -343,21 +351,22 @@ test "Codegen assign" {
         \\}
         \\
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
     defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
     try pop.populateSymtable(&treeNode);
-    var gen = Generator.init(std.testing.allocator, parseTree);
-    defer gen.deinit();
-    const actual = try gen.generate();
-    try expect(std.mem.eql(u8, actual, expected));
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }
 
 test "Codegen assign constant" {
@@ -372,19 +381,62 @@ test "Codegen assign constant" {
         \\    return testvar;
         \\}
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
     defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
     try pop.populateSymtable(&treeNode);
-    var gen = Generator.init(std.testing.allocator, parseTree);
-    defer gen.deinit();
-    const actual = gen.generate();
-    try std.testing.expectError(CodegenError.Immutable, actual);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = generator.generate();
+    try std.testing.expectError(CodegenError.Immutable, code);
+}
+test "Codegen extern fn string" {
+    const tok = @import("tokenize.zig");
+    const expect = std.testing.expect;
+    const main = @import("main.zig");
+
+    const src =
+        \\import fn puts(str: [u8]) -> i32;
+        \\fn main() -> i32 {
+        \\    puts("Hello World!");
+        \\}
+    ;
+    const expected =
+        \\; ModuleID = '_calico_start'
+        \\source_filename = "_calico_start"
+        \\
+        \\@.str.0 = private unnamed_addr constant [13 x i8] c"Hello World!\00"
+        \\
+        \\declare i32 @puts(ptr)
+        \\
+        \\define i32 @main() {
+        \\entry:
+        \\  %puts = call i32 @puts(ptr @.str.0)
+        \\}
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }

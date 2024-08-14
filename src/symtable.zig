@@ -41,6 +41,15 @@ pub const SymbType = union(enum) {
             else => "void",
         };
     }
+    pub fn toTypeIdent(self: SymbType, allocator: std.mem.Allocator) !pars.TypeIdent {
+        return pars.TypeIdent{
+            .ident = try self.toString(allocator),
+            .list = switch (self) {
+                .String => true,
+                else => false,
+            },
+        };
+    }
 };
 
 pub const SymbValue = struct {

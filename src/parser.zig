@@ -315,6 +315,7 @@ pub const Parser = struct {
     }
 
     fn parseAssign(self: *Parser) ParsingError!NodeStmt {
+        std.debug.print("{any}\n", .{self.tokens.peek().?});
         const ident = (try self.tokens.consume(.ident)).?;
         _ = try self.tokens.consume(.equal);
         const expr = try self.parseExpr();
@@ -346,7 +347,7 @@ pub const Parser = struct {
 
     fn parseVariable(self: *Parser) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.variable);
-        var typ: TypeIdent = undefined;
+        var typ: ?TypeIdent = null;
         if (self.tokens.consume(.colon)) |_| {
             typ = .{
                 .ident = (try self.tokens.consume(.ident)).?.ident,
@@ -509,20 +510,22 @@ pub const ExprKind = union(enum) {
 };
 
 test "Parser" {
+    const main = @import("main.zig");
     const expect = std.testing.expect;
     const src = "return 120;";
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
     defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-
-    var symbTable = try symb.SymbolTable.init(std.testing.allocator);
-    defer symbTable.deinit();
-
-    var parser = Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    const children = try parseTree.children(std.testing.allocator);
-    defer std.testing.allocator.free(children);
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    const children = try treeNode.children(allocator);
     const exp: []const Node = &[_]Node{Node{
         .Stmt = NodeStmt{
             .id = 2,
