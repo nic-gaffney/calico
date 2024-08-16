@@ -11,6 +11,7 @@ const CodegenError = error{
     Immutable,
     OutOfMemory,
     IncorrectType,
+    UnknownIdentifier,
 };
 
 fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable, expr: ?parse.NodeExpr) types.LLVMTypeRef {
@@ -80,7 +81,14 @@ pub const Generator = struct {
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
         const value = try self.genExpr(nodeVar.expr);
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.symtable.getValue(nodeVar.ident.ident).?.typ.toTypeIdent(self.allocator), table, nodeVar.expr).?, nodeVar.ident.ident);
+        const ptr = try self.genAlloc(
+            toLLVMtype(
+                nodeVar.expr.typ orelse try nodeVar.expr.symtable.getValue(nodeVar.ident.ident).?.typ.toTypeIdent(self.allocator),
+                table,
+                nodeVar.expr,
+            ).?,
+            nodeVar.ident.ident,
+        );
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
     }
@@ -90,7 +98,7 @@ pub const Generator = struct {
 
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table, nodeVar.expr), nodeVar.ident.ident);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.inferType(self.allocator, table), table, nodeVar.expr), nodeVar.ident.ident);
         const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
@@ -242,8 +250,6 @@ pub const Generator = struct {
             },
 
             .call => |call| blk: {
-                std.debug.print("Function {s} requested\n", .{call.ident.ident});
-
                 const functype = expr.symtable.getValue(call.ident.ident).?.typ.Function;
                 const ident = try self.allocator.dupeZ(u8, call.ident.ident);
                 const function = core.LLVMGetNamedFunction(self.module, ident);
@@ -329,7 +335,7 @@ test "Codegen assign" {
     const src =
         \\fn main() -> i32 {
         \\    const testval = 6;
-        \\    varbl testvar = testval;
+        \\    varbl: i32 testvar = testval;
         \\    testvar = 5;
         \\    return testvar;
         \\}

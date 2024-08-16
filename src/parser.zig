@@ -17,6 +17,13 @@ const ParsingError = error{
     ExpectedToken,
     OutOfMemory,
     TokenIteratorOnly,
+    TypeRequiredForVarbl,
+};
+
+const TypeError = error{
+    OutOfMemory,
+    IncorrectType,
+    UnknownIdentifier,
 };
 
 fn errcast(err: anytype) ParsingError {
@@ -55,6 +62,17 @@ pub const NodeExpr = struct {
             else => {},
         }
         return try childrenArray.toOwnedSlice();
+    }
+    pub fn inferType(self: NodeExpr, allocator: std.mem.Allocator, table: *symb.SymbolTable) TypeError!TypeIdent {
+        const expectedType = try switch (self.kind) {
+            .call => |call| if (table.getValue(call.ident.ident)) |symbol| try symbol.typ.Function.output.toTypeIdent(allocator) else TypeError.UnknownIdentifier,
+            .ident => |id| if (table.getValue(id.ident)) |symbol| try symbol.typ.toTypeIdent(allocator) else TypeError.UnknownIdentifier,
+            .intLit => TypeIdent{ .ident = "i32", .list = false },
+            .stringLit => TypeIdent{ .ident = "[u8]", .list = true },
+        };
+        if (self.typ) |typ| {
+            return if (std.mem.eql(u8, typ.ident, expectedType.ident)) expectedType else TypeError.IncorrectType;
+        } else return expectedType;
     }
 };
 
@@ -182,10 +200,7 @@ pub const Parser = struct {
                             },
                         };
                     }
-                    typ = TypeIdent{
-                        .ident = "i32",
-                        .list = false,
-                    };
+                    typ = null;
                     break :blk ExprKind{ .ident = ident };
                 },
                 .stringLit => {
@@ -315,7 +330,6 @@ pub const Parser = struct {
     }
 
     fn parseAssign(self: *Parser) ParsingError!NodeStmt {
-        std.debug.print("{any}\n", .{self.tokens.peek().?});
         const ident = (try self.tokens.consume(.ident)).?;
         _ = try self.tokens.consume(.equal);
         const expr = try self.parseExpr();
@@ -348,14 +362,13 @@ pub const Parser = struct {
     fn parseVariable(self: *Parser) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.variable);
         var typ: ?TypeIdent = null;
-        if (self.tokens.consume(.colon)) |_| {
-            typ = .{
-                .ident = (try self.tokens.consume(.ident)).?.ident,
-                .list = false,
-            };
-        } else |err| {
-            if (err != tok.TokenizeError.ExpectedToken) return errcast(.{err});
-        }
+        _ = self.tokens.consume(.colon) catch {
+            return ParsingError.TypeRequiredForVarbl;
+        };
+        typ = .{
+            .ident = (try self.tokens.consume(.ident)).?.ident,
+            .list = false,
+        };
         const ident = (try self.tokens.consume(.ident)).?;
         _ = try self.tokens.consume(.equal);
         const expr = try self.parseExpr();

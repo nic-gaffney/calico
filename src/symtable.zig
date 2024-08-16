@@ -23,7 +23,7 @@ pub const SymbType = union(enum) {
     pub fn toSymb(self: SymbType) Symbol {
         return Symbol{ .Type = self };
     }
-    pub fn toString(self: SymbType, allocator: std.mem.Allocator) ![]const u8 {
+    pub fn toString(self: SymbType, allocator: std.mem.Allocator) error{OutOfMemory}![]const u8 {
         return switch (self) {
             .Integer => "i32",
             .Character => "u8",
@@ -33,15 +33,20 @@ pub const SymbType = union(enum) {
                 var argstring: []const u8 = "";
                 if (fun.input.len != 0) {
                     argstring = try fun.input[0].toString(allocator);
-                    for (1..fun.input.len) |i|
-                        argstring = try std.mem.join(allocator, ", ", &[_][]const u8{ argstring, try fun.input[i].toString(allocator) });
+                    for (1..fun.input.len) |i| {
+                        const inputTyp = [_][]const u8{
+                            argstring,
+                            try fun.input[i].toString(allocator),
+                        };
+                        argstring = try std.mem.join(allocator, ", ", &inputTyp);
+                    }
                 }
                 break :blk try std.fmt.allocPrint(allocator, "fn({s})->{s}", .{ argstring, output });
             },
             else => "void",
         };
     }
-    pub fn toTypeIdent(self: SymbType, allocator: std.mem.Allocator) !pars.TypeIdent {
+    pub fn toTypeIdent(self: SymbType, allocator: std.mem.Allocator) error{OutOfMemory}!pars.TypeIdent {
         return pars.TypeIdent{
             .ident = try self.toString(allocator),
             .list = switch (self) {
@@ -66,7 +71,7 @@ pub const SymbolTable = struct {
     scope: ?*Scope = null,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) !*SymbolTable {
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*SymbolTable {
         const scope = try allocator.create(Scope);
         scope.par = null;
         scope.symbs = std.StringHashMap(Symbol).init(allocator);
@@ -100,7 +105,7 @@ pub const SymbolTable = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn makeChild(self: *SymbolTable) !*SymbolTable {
+    pub fn makeChild(self: *SymbolTable) error{OutOfMemory}!*SymbolTable {
         const scope = try self.allocator.create(Scope);
         scope.par = self.scope;
         scope.symbs = try self.scope.?.symbs.clone();
@@ -185,10 +190,10 @@ pub const Populator = struct {
             .Stmt => |stmt| {
                 const table: *SymbolTable = stmt.symtable;
                 switch (stmt.kind) {
-                    .defVar => |variable| {
+                    .defVar => |*variable| {
                         const symbol: Symbol = try self.buildValueSymb(
                             table,
-                            if (variable.expr.typ) |typ| typ else pars.TypeIdent{ .ident = "i32", .list = false },
+                            try variable.expr.inferType(self.allocator, table),
                             true,
                         );
                         if (!try table.insert(variable.ident.ident, symbol)) return error.FailedToInsert;
@@ -196,7 +201,7 @@ pub const Populator = struct {
                     .defValue => |value| {
                         const symbol: Symbol = try self.buildValueSymb(
                             table,
-                            if (value.expr.typ) |typ| typ else pars.TypeIdent{ .ident = "i32", .list = false },
+                            try value.expr.inferType(self.allocator, table),
                             false,
                         );
                         if (!try table.insert(value.ident.ident, symbol)) return error.FailedToInsert;
@@ -215,13 +220,19 @@ pub const Populator = struct {
                         );
 
                         if (!try table.insert(fun.ident.ident, symbol)) return error.FailedToInsert;
-                        std.debug.print("Function {s} inserted\n", .{fun.ident.ident});
                         if (fun.block == null) return;
                         const block = fun.block.?.asNode();
                         try self.populateSymtable(&block);
                     },
+                    .assignVar => |assign| _ = {
+                        const expectedType = try if (table.getValue(assign.ident.ident)) |symbol| try symbol.typ.toTypeIdent(self.allocator) else error.UnknownIdentifier;
+                        const actualType = try assign.expr.inferType(self.allocator, table);
+                        if (!std.mem.eql(u8, actualType.ident, expectedType.ident)) return error.IncorrectType;
+                    },
+                    .exit => |exit| _ = try exit.inferType(self.allocator, table),
+                    .expr => {},
 
-                    else => {},
+                    // else => return error.Unimplemented,
                 }
             },
             else => {
@@ -263,7 +274,6 @@ pub const Populator = struct {
         }
 
         const name = try std.fmt.allocPrint(self.allocator, "fn({s})->{s}", .{ argstring, try output.toString(self.allocator) });
-        std.debug.print("Function type => \"{s}\"\n", .{name});
         _ = try table.insert(name, typ.toSymb());
 
         return Symbol{
