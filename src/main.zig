@@ -5,6 +5,12 @@ const gen = @import("codegen.zig");
 const symb = @import("symtable.zig");
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alc = gpa.allocator();
+    defer _ = gpa.deinit();
+    var arena = std.heap.ArenaAllocator.init(alc);
+    defer arena.deinit();
+    var allocator = arena.allocator();
     if (std.os.argv.len < 2) {
         std.debug.print(
             \\info: Usage: calico [input file]
@@ -12,10 +18,6 @@ pub fn main() !void {
         , .{});
         return;
     }
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
-    defer _ = gpa.deinit();
 
     var args = std.process.args();
     _ = args.skip();
@@ -58,12 +60,10 @@ pub fn main() !void {
     try pop.populateSymtable(&treeNode);
 
     // Codegen
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    var generator = gen.Generator.init(arena.allocator(), tree);
+    var generator = gen.Generator.init(allocator, tree);
     defer generator.deinit();
     const code = try generator.generate();
     try outWriter.writeAll(code);
-    arena.deinit();
 
     const binFile = try getFileName(allocator, out_name, "");
     defer allocator.free(binFile);

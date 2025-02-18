@@ -16,6 +16,7 @@ pub const TokenType = enum {
     variable,
     exit,
     fun,
+    import,
     // Operators
     plus,
     minus,
@@ -32,6 +33,8 @@ pub const TokenType = enum {
     openParen,
     closeParen,
     arrow,
+    colon,
+    comma,
 };
 
 pub const Token = union(TokenType) {
@@ -44,6 +47,7 @@ pub const Token = union(TokenType) {
     variable,
     exit,
     fun,
+    import,
     // Operators
     plus,
     minus,
@@ -60,38 +64,12 @@ pub const Token = union(TokenType) {
     openParen,
     closeParen,
     arrow,
-
-    pub fn toTokenType(self: Token) TokenType {
-        switch (self) {
-            .ident => .ident,
-            .intLit => .intLit,
-            // Keywords
-            .ifstmt => .ifstmt,
-            .constant => .constant,
-            .variable => .variable,
-            .exit => .exit,
-            .fun => .fun,
-            // =>  Operators .=>
-            .plus => .plus,
-            .minus => .minus,
-            .star => .star,
-            .slash => .slash,
-            .semiCol => .semiCol,
-            .equal => .equal,
-            .eqleql => .eqleql,
-            .lessthan => .lessthan,
-            .greaterthan => .greaterthan,
-            // =>  Symbols .=>
-            .openBrace => .openBrace,
-            .closeBrace => .closeBrace,
-            .openParen => .openParen,
-            .closeParen => .closeParen,
-            .arrow => .arrow,
-        }
-    }
+    colon,
+    comma,
 
     pub fn fromChar(char: u8) !Token {
         return switch (char) {
+            ',' => .comma,
             '+' => .plus,
             '-' => .minus,
             '*' => .star,
@@ -104,7 +82,11 @@ pub const Token = union(TokenType) {
             ')' => .closeParen,
             '<' => .lessthan,
             '>' => .greaterthan,
-            else => TokenizeError.UnknownToken,
+            ':' => .colon,
+            else => blk: {
+                std.debug.print("Invalid char: {c}\n", .{char});
+                break :blk TokenizeError.UnknownToken;
+            },
         };
     }
 
@@ -115,6 +97,7 @@ pub const Token = union(TokenType) {
         if (eql(u8, str, "var")) return .variable;
         if (eql(u8, str, "fn")) return .fun;
         if (eql(u8, str, "if")) return .ifstmt;
+        if (eql(u8, str, "import")) return .import;
         return Token{ .ident = str };
     }
 };
@@ -156,8 +139,10 @@ pub fn Iterator(comptime typ: type) type {
 
         pub fn consume(self: *Iterator(typ), comptime expected: TokenType) !?typ {
             if (typ != Token) return error.TokenIteratorOnly;
-            if (!checkType(self.peek().?, expected))
+            if (!checkType(self.peek().?, expected)) {
+                std.debug.print("Expected {any} got {any} \n", .{ expected, self.peek().? });
                 return TokenizeError.ExpectedToken;
+            }
             return self.next();
         }
 

@@ -65,7 +65,7 @@ pub const Generator = struct {
 
     fn genExit(self: *Generator, exit: parse.NodeExit) !void {
         const expr = exit;
-        const val = self.genExpr(expr);
+        const val = try self.genExpr(expr);
         _ = core.LLVMBuildRet(self.builder, val);
     }
 
@@ -74,7 +74,7 @@ pub const Generator = struct {
 
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
-        const value = self.genExpr(nodeVar.expr);
+        const value = try self.genExpr(nodeVar.expr);
         const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table).?, nodeVar.ident.ident);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
@@ -86,8 +86,9 @@ pub const Generator = struct {
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
         const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
-        const value = self.genExpr(nodeVar.expr);
+        const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
+        std.debug.print("\t\t\tGenerated Value {s}\n", .{nodeVar.ident.ident});
         try self.references.put(symbol.id, ptr);
     }
 
@@ -107,9 +108,9 @@ pub const Generator = struct {
         return core.LLVMBuildAlloca(builder, typ, str);
     }
 
-    fn asBasicType(typ: symb.SymbType) ?types.LLVMTypeKind {
+    fn asBasicType(typ: symb.SymbType) ?types.LLVMTypeRef {
         return switch (typ) {
-            .Integer => types.LLVMTypeKind.LLVMIntegerTypeKind,
+            .Integer => core.LLVMInt32Type(),
             else => null,
         };
     }
@@ -120,7 +121,7 @@ pub const Generator = struct {
         const symbol = table.get(stmt.kind.assignVar.ident.ident).?;
         if (!symbol.Value.mut) return CodegenError.Immutable;
         const ptr = self.references.get(symbol.Value.id).?;
-        const value = self.genExpr(stmt.kind.assignVar.expr);
+        const value = try self.genExpr(stmt.kind.assignVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
     }
 
@@ -161,7 +162,7 @@ pub const Generator = struct {
         const block = ifkind.body;
         const expr = ifkind.expr;
 
-        const condition = self.genExpr(expr);
+        const condition = try self.genExpr(expr);
         const func = self.currentFunc.?;
 
         const then = core.LLVMAppendBasicBlock(func, "then");
@@ -181,6 +182,7 @@ pub const Generator = struct {
     }
 
     fn genStmt(self: *Generator, stmt: parse.NodeStmt) !void {
+        std.debug.print("======\n\tStmt: {any}\n======\n", .{stmt.kind});
         try switch (stmt.kind) {
             .exit => |expr| self.genExit(expr),
             .function => self.genFunc(stmt),
@@ -192,8 +194,32 @@ pub const Generator = struct {
         };
     }
 
-    fn genExpr(self: *Generator, expr: parse.NodeExpr) types.LLVMValueRef {
+    fn genExpr(self: *Generator, expr: parse.NodeExpr) !types.LLVMValueRef {
+        std.debug.print("======\n\t\tExpr: {any}\n======\n", .{expr.kind});
         return switch (expr.kind) {
+            .call => |callee| blk: {
+                const ident: [*:0]const u8 = try self.allocator.dupeZ(u8, callee.ident.ident);
+                const func = core.LLVMGetNamedFunction(self.module, ident);
+                const symbol = expr.symtable.get(callee.ident.ident).?;
+                const retType = asBasicType(symbol.Value.typ.Function.output.*);
+
+                const paramTypes = ([_]types.LLVMTypeRef{})[0..0];
+                var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
+                for (callee.args.items) |item|
+                    try args.append(try self.genExpr(item));
+
+                const typ = core.LLVMFunctionType(retType.?, @ptrCast(@constCast(paramTypes)), 0, 0);
+                const call = core.LLVMBuildCall2(
+                    self.builder,
+                    typ,
+                    func,
+                    @ptrCast(args.items),
+                    0,
+                    // @intCast(callee.args.items.len),
+                    "",
+                );
+                break :blk call;
+            },
             .ident => blk: {
                 const table = expr.symtable;
                 const symbol = table.getValue(expr.kind.ident.ident).?;
@@ -202,8 +228,9 @@ pub const Generator = struct {
             },
             .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
             .binaryOp => |exp| blk: {
-                const lhs = self.genExpr(exp.lhs.*);
-                const rhs = self.genExpr(exp.rhs.*);
+                const lhs = try self.genExpr(exp.lhs.*);
+                const rhs = try self.genExpr(exp.rhs.*);
+                std.debug.print("\n\n\tLHS: {any}\n\tRHS: {any}\n\tOP: {any}\n\n", .{ lhs, rhs, exp.op });
 
                 break :blk switch (exp.op) {
                     .plus => core.LLVMBuildAdd(self.builder, lhs, rhs, "add"),
@@ -220,8 +247,9 @@ pub const Generator = struct {
     pub fn generate(self: *Generator) ![]const u8 {
         try switch (self.root.kind) {
             .block => |b| {
-                for (b) |stmt|
+                for (b) |stmt| {
                     try self.genStmt(stmt);
+                }
             },
             else => error.InvalidTop,
         };

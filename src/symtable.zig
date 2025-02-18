@@ -80,6 +80,7 @@ pub const SymbolTable = struct {
         const scope = try self.allocator.create(Scope);
         scope.par = self.scope;
         scope.symbs = std.StringHashMap(Symbol).init(self.allocator);
+        // scope.symbs = self.scope.?.symbs;
         const stable: *SymbolTable = try self.allocator.create(SymbolTable);
         stable.* = .{
             .scope = scope,
@@ -88,7 +89,7 @@ pub const SymbolTable = struct {
         return stable;
     }
 
-    pub fn parent(self: SymbolTable) ?*SymbolTable {
+    pub fn parent(self: SymbolTable) ?*Scope {
         if (self.scope) |scope|
             if (scope.par) |par|
                 return par;
@@ -101,6 +102,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn get(self: SymbolTable, ident: []const u8) ?Symbol {
+        if (!self.contains(ident)) if (self.parent()) |par| return par.symbs.get(ident);
         if (self.scope) |scope| return scope.symbs.get(ident);
         return null;
     }
@@ -174,6 +176,7 @@ pub const Populator = struct {
                             if (value.expr.typ) |typ| typ else pars.TypeIdent{ .ident = "i32", .list = false },
                             false,
                         );
+                        std.debug.print("Value: {s}\nSymbol: {any}\n", .{ value.ident.ident, symbol });
                         if (!try table.insert(value.ident.ident, symbol)) return error.FailedToInsert;
                     },
                     .block => {
@@ -245,6 +248,7 @@ pub const Populator = struct {
             };
             return value.toSymb();
         }
+        std.debug.print("Unknown Type: {s}\n", .{typ.ident});
         return error.UnknownType;
     }
 };
