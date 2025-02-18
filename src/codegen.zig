@@ -12,6 +12,7 @@ const CodegenError = error{
     OutOfMemory,
     IncorrectType,
     UnknownIdentifier,
+    Unimplemented,
 };
 
 fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable, expr: ?parse.NodeExpr) types.LLVMTypeRef {
@@ -270,7 +271,7 @@ pub const Generator = struct {
                     .star => core.LLVMBuildMul(self.builder, lhs, rhs, "mul"),
                     .slash => core.LLVMBuildSDiv(self.builder, lhs, rhs, "div"),
                     .eqleql => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
-                    else => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
+                    else => return error.Unimplemented,
                 };
             },
             .stringLit => |str| blk: {

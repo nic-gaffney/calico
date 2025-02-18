@@ -6,13 +6,13 @@ fn test() -> i32 {
 }
 
 fn main() -> i32 {
-    const: i32 num = 5;
+    const: i32 num = 5 + 3 * 7;
     const: i32 num2 = test();
-    if (num2 == test()) {
+    if (num2 == test())
         puts("Hello World!");
-    }
-    if (num2 == 0) {
+
+    if (num2 == 0)
         puts("Shouldn't print");
-    }
-    return num2;
+
+    return num;
 }
