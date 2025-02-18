@@ -10,12 +10,16 @@ const types = llvm.types;
 const CodegenError = error{
     Immutable,
     OutOfMemory,
+    IncorrectType,
+    UnknownIdentifier,
 };
 
-fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable) types.LLVMTypeRef {
+fn toLLVMtype(typ: parse.TypeIdent, sym: *symb.SymbolTable, expr: ?parse.NodeExpr) types.LLVMTypeRef {
+    _ = expr;
     if (sym.getType(typ)) |t| {
         return switch (t) {
             .Integer => core.LLVMInt32Type(),
+            .String => core.LLVMPointerType(core.LLVMInt8Type(), 0),
             .Void => core.LLVMVoidType(),
             else => core.LLVMVoidType(),
         };
@@ -32,15 +36,16 @@ pub const Generator = struct {
     currentFunc: ?types.LLVMValueRef,
     currentFuncIsVoid: bool,
     references: std.AutoHashMap(u32, types.LLVMValueRef),
+    stringId: u32,
 
-    pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt) Generator {
+    pub fn init(allocator: std.mem.Allocator, root: parse.NodeStmt, filename: [*:0]const u8) Generator {
         _ = target.LLVMInitializeNativeTarget();
         _ = target.LLVMInitializeNativeAsmPrinter();
         _ = target.LLVMInitializeNativeAsmParser();
 
         const context = core.LLVMContextCreate();
         const builder = core.LLVMCreateBuilderInContext(context);
-        const module = core.LLVMModuleCreateWithNameInContext("_calico_start", context);
+        const module = core.LLVMModuleCreateWithNameInContext(filename, context);
 
         return .{
             .root = root,
@@ -51,6 +56,7 @@ pub const Generator = struct {
             .currentFunc = null,
             .currentFuncIsVoid = false,
             .references = std.AutoHashMap(u32, types.LLVMValueRef).init(allocator),
+            .stringId = 0,
         };
     }
 
@@ -75,7 +81,15 @@ pub const Generator = struct {
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
         const value = try self.genExpr(nodeVar.expr);
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table).?, nodeVar.ident.ident);
+        // const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table).?, nodeVar.ident.ident);
+        const ptr = try self.genAlloc(
+            toLLVMtype(
+                nodeVar.expr.typ orelse try nodeVar.expr.symtable.getValue(nodeVar.ident.ident).?.typ.toTypeIdent(self.allocator),
+                table,
+                nodeVar.expr,
+            ).?,
+            nodeVar.ident.ident,
+        );
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         try self.references.put(symbol.id, ptr);
     }
@@ -85,7 +99,8 @@ pub const Generator = struct {
 
         const table = stmt.symtable;
         const symbol = table.getValue(nodeVar.ident.ident).?;
-        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
+        // const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
+        const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.inferType(self.allocator, table), table, nodeVar.expr), nodeVar.ident.ident);
         const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         std.debug.print("\t\t\tGenerated Value {s}\n", .{nodeVar.ident.ident});
@@ -116,7 +131,7 @@ pub const Generator = struct {
     }
 
     fn genAssign(self: *Generator, stmt: parse.NodeStmt) !void {
-        std.debug.print("assign\n", .{});
+        // std.debug.print("assign\n", .{});
         const table = stmt.symtable;
         const symbol = table.get(stmt.kind.assignVar.ident.ident).?;
         if (!symbol.Value.mut) return CodegenError.Immutable;
@@ -130,34 +145,51 @@ pub const Generator = struct {
     }
 
     fn genFunc(self: *Generator, stmt: parse.NodeStmt) !void {
+        self.references.clearAndFree();
         const fun = stmt.kind.function;
-        const table = stmt.symtable;
-        const block = fun.block;
-        const codeSlice = block.kind.block;
+        var table: *symb.SymbolTable = stmt.symtable;
+        var block: *parse.NodeStmt = undefined;
+        var codeSlice: []const parse.NodeStmt = undefined;
+        if (fun.block != null) {
+            table = fun.block.?.symtable;
+            block = fun.block.?;
+            codeSlice = block.kind.block;
+        }
         const funcName: [*:0]const u8 = try self.allocator.dupeZ(u8, fun.ident.ident);
 
-        const retType = toLLVMtype(fun.retType.?, table);
-        var params = [0]types.LLVMTypeRef{};
-        const funcType = core.LLVMFunctionType(retType, @ptrCast(&params), 0, 0);
+        const retType = toLLVMtype(fun.retType.?, table, null);
+        var params = std.ArrayList(types.LLVMTypeRef).init(self.allocator);
+        for (fun.args) |arg| {
+            try params.append(toLLVMtype(arg.typ, table, null));
+        }
+
+        const funcType = core.LLVMFunctionType(retType, @ptrCast(params.items), @intCast(params.items.len), 0);
         const func = core.LLVMAddFunction(self.module, funcName, funcType);
-        self.currentFunc = func;
-        self.currentFuncIsVoid = switch (table.getType(fun.retType.?).?) {
-            .Void => true,
-            else => false,
-        };
+        for (fun.args, 0..) |arg, i| {
+            const symbol = table.get(arg.ident).?;
+            const ptr: types.LLVMValueRef = core.LLVMGetParam(func, @intCast(i));
+            try self.references.put(symbol.Value.id, ptr);
+        }
 
-        const function: types.LLVMValueRef = self.currentFunc.?;
-        const codeBlock = core.LLVMAppendBasicBlockInContext(self.context, function, "entry");
-        core.LLVMPositionBuilderAtEnd(self.builder, codeBlock);
-        const bodyTable = block.symtable;
-        _ = bodyTable;
-        //TODO: codegen for args
+        if (fun.block != null) {
+            self.currentFunc = func;
+            self.currentFuncIsVoid = switch (table.getType(fun.retType.?).?) {
+                .Void => true,
+                else => false,
+            };
 
-        try self.genBlock(codeSlice);
-        _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
+            const function: types.LLVMValueRef = func;
+            const codeBlock = core.LLVMAppendBasicBlockInContext(self.context, function, "entry");
+            core.LLVMPositionBuilderAtEnd(self.builder, codeBlock);
+            const bodyTable = block.symtable;
+            _ = bodyTable;
+
+            try self.genBlock(codeSlice);
+            _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
+        }
     }
 
-    fn genIf(self: *Generator, stmt: parse.NodeStmt) error{ OutOfMemory, Immutable }!void {
+    fn genIf(self: *Generator, stmt: parse.NodeStmt) CodegenError!void {
         const ifkind = stmt.kind.ifstmt;
         const block = ifkind.body;
         const expr = ifkind.expr;
@@ -190,41 +222,41 @@ pub const Generator = struct {
             .defVar => self.genVar(stmt),
             .assignVar => self.genAssign(stmt),
             .ifstmt => self.genIf(stmt),
+            .expr => |expression| {
+                _ = try self.genExpr(expression);
+            },
+
             else => {},
         };
     }
 
     fn genExpr(self: *Generator, expr: parse.NodeExpr) !types.LLVMValueRef {
-        std.debug.print("======\n\t\tExpr: {any}\n======\n", .{expr.kind});
         return switch (expr.kind) {
-            .call => |callee| blk: {
-                const ident: [*:0]const u8 = try self.allocator.dupeZ(u8, callee.ident.ident);
-                const func = core.LLVMGetNamedFunction(self.module, ident);
-                const symbol = expr.symtable.get(callee.ident.ident).?;
-                const retType = asBasicType(symbol.Value.typ.Function.output.*);
+            .ident => |id| blk: {
+                // std.debug.print("getValue({s})\n", .{id.ident});
+                const table = expr.symtable;
 
-                const paramTypes = ([_]types.LLVMTypeRef{})[0..0];
-                var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
-                for (callee.args.items) |item|
-                    try args.append(try self.genExpr(item));
+                // std.debug.print("\n\nEXPERTABLE\n\n", .{});
+                // var iterTable = table.scope.?.symbs.iterator();
+                // while (iterTable.next()) |entry| {
+                //     // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                // }
+                // std.debug.print("\n\nEXPERTABLE\n\n", .{});
+                const symbol = table.getValue(id.ident).?;
+                const ptr = self.references.get(symbol.id).?;
+                if (core.LLVMIsAArgument(ptr)) |_|
+                    break :blk ptr;
 
-                const typ = core.LLVMFunctionType(retType.?, @ptrCast(@constCast(paramTypes)), 0, 0);
-                const call = core.LLVMBuildCall2(
+                break :blk core.LLVMBuildLoad2(
                     self.builder,
-                    typ,
-                    func,
-                    @ptrCast(args.items),
-                    0,
-                    // @intCast(callee.args.items.len),
+                    toLLVMtype(
+                        expr.typ orelse try table.getValue(id.ident).?.typ.toTypeIdent(self.allocator),
+                        table,
+                        expr,
+                    ),
+                    ptr,
                     "",
                 );
-                break :blk call;
-            },
-            .ident => blk: {
-                const table = expr.symtable;
-                const symbol = table.getValue(expr.kind.ident.ident).?;
-                const ptr = self.references.get(symbol.id).?;
-                break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table), ptr, "");
             },
             .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
             .binaryOp => |exp| blk: {
@@ -240,6 +272,49 @@ pub const Generator = struct {
                     .eqleql => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
                     else => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
                 };
+            },
+            .stringLit => |str| blk: {
+                const vref = core.LLVMAddGlobal(
+                    self.module,
+                    core.LLVMArrayType(core.LLVMInt8Type(), @intCast(str.stringLit.len + 1)),
+                    try self.allocator.dupeZ(u8, try std.fmt.allocPrint(
+                        self.allocator,
+                        ".str.{d}",
+                        .{self.stringId},
+                    )),
+                );
+                self.stringId += 1;
+                const sref = core.LLVMConstString(try self.allocator.dupeZ(u8, str.stringLit), @intCast(str.stringLit.len), 0);
+                core.LLVMSetInitializer(vref, sref);
+                core.LLVMSetGlobalConstant(vref, 1);
+                core.LLVMSetLinkage(vref, .LLVMPrivateLinkage);
+                core.LLVMSetUnnamedAddr(vref, 1);
+                break :blk vref;
+            },
+
+            .call => |call| blk: {
+                const functype = expr.symtable.getValue(call.ident.ident).?.typ.Function;
+                const ident = try self.allocator.dupeZ(u8, call.ident.ident);
+                const function = core.LLVMGetNamedFunction(self.module, ident);
+                var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
+                for (call.args.items, functype.input) |arg, intype| {
+                    if (!std.meta.eql(expr.symtable.getType(arg.typ.?).?, intype)) return CodegenError.IncorrectType;
+                    try args.append(try self.genExpr(arg));
+                }
+                const funcType = core.LLVMGlobalGetValueType(function);
+                // std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
+
+                const llvmCall = core.LLVMBuildCall2(
+                    self.builder,
+                    funcType,
+                    function,
+                    @ptrCast(args.items),
+                    @intCast(call.args.items.len),
+                    ident,
+                );
+                // std.debug.print("CALL\n", .{});
+
+                break :blk llvmCall;
             },
         };
     }
@@ -278,23 +353,22 @@ test "Codegen exit" {
         \\}
         \\
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
-    defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
-    try pop.populateSymtable(&treeNode);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var gen = Generator.init(arena.allocator(), parseTree);
-    defer gen.deinit();
-    const actual = try gen.generate();
-    try expect(std.mem.eql(u8, actual, expected));
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }
 
 test "Codegen assign" {
@@ -305,7 +379,7 @@ test "Codegen assign" {
     const src =
         \\fn main() -> i32 {
         \\    const testval = 6;
-        \\    var testvar = testval;
+        \\    varbl: i32 testvar = testval;
         \\    testvar = 5;
         \\    return testvar;
         \\}
@@ -327,21 +401,22 @@ test "Codegen assign" {
         \\}
         \\
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
     defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
     try pop.populateSymtable(&treeNode);
-    var gen = Generator.init(std.testing.allocator, parseTree);
-    defer gen.deinit();
-    const actual = try gen.generate();
-    try expect(std.mem.eql(u8, actual, expected));
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }
 
 test "Codegen assign constant" {
@@ -356,19 +431,62 @@ test "Codegen assign constant" {
         \\    return testvar;
         \\}
     ;
-    var tokenizer = tok.Tokenizer.init(std.testing.allocator, src);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
     defer tokenizer.deinit();
-    const toks = try tokenizer.tokenize();
-    var symbTable: *symb.SymbolTable = try main.initSymbolTable(std.testing.allocator);
-    defer symbTable.deinit();
-    var parser = parse.Parser.init(std.testing.allocator, toks, symbTable);
-    defer parser.deinit();
-    const parseTree = try parser.parse();
-    var pop = symb.Populator.init(std.testing.allocator);
-    var treeNode = parseTree.asNode();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
     try pop.populateSymtable(&treeNode);
-    var gen = Generator.init(std.testing.allocator, parseTree);
-    defer gen.deinit();
-    const actual = gen.generate();
-    try std.testing.expectError(CodegenError.Immutable, actual);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = generator.generate();
+    try std.testing.expectError(CodegenError.Immutable, code);
+}
+test "Codegen extern fn string" {
+    const tok = @import("tokenize.zig");
+    const expect = std.testing.expect;
+    const main = @import("main.zig");
+
+    const src =
+        \\import fn puts(str: [u8]) -> i32;
+        \\fn main() -> i32 {
+        \\    puts("Hello World!");
+        \\}
+    ;
+    const expected =
+        \\; ModuleID = '_calico_start'
+        \\source_filename = "_calico_start"
+        \\
+        \\@.str.0 = private unnamed_addr constant [13 x i8] c"Hello World!\00"
+        \\
+        \\declare i32 @puts(ptr)
+        \\
+        \\define i32 @main() {
+        \\entry:
+        \\  %puts = call i32 @puts(ptr @.str.0)
+        \\}
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = tok.Tokenizer.init(allocator, src);
+    defer tokenizer.deinit();
+    const tokens = try tokenizer.tokenize();
+    const symbTable = try main.initSymbolTable(arena.allocator());
+    var parser = parse.Parser.init(arena.allocator(), tokens, symbTable);
+    const tree = try parser.parse();
+    var treeNode = tree.asNode();
+    var pop = symb.Populator.init(arena.allocator());
+    try pop.populateSymtable(&treeNode);
+    var generator = Generator.init(arena.allocator(), tree, "_calico_start");
+    defer generator.deinit();
+    const code = try generator.generate();
+    try expect(std.mem.eql(u8, code, expected));
 }

@@ -4,12 +4,15 @@ pub const TokenizeError = error{
     UnknownToken,
     UnexpectedEOF,
     ExpectedToken,
+    TokenIteratorOnly,
 };
 
 pub const TokenType = enum {
     // Runtime Values
     ident,
+    stringLit,
     intLit,
+    charLit,
     // Keywords
     ifstmt,
     constant,
@@ -32,6 +35,8 @@ pub const TokenType = enum {
     closeBrace,
     openParen,
     closeParen,
+    openBracket,
+    closeBracket,
     arrow,
     colon,
     comma,
@@ -40,7 +45,9 @@ pub const TokenType = enum {
 pub const Token = union(TokenType) {
     //RuntimeVar
     ident: []const u8,
+    stringLit: []const u8,
     intLit: i32,
+    charLit: u8,
     // Keywords
     ifstmt,
     constant,
@@ -63,6 +70,8 @@ pub const Token = union(TokenType) {
     closeBrace,
     openParen,
     closeParen,
+    openBracket,
+    closeBracket,
     arrow,
     colon,
     comma,
@@ -83,9 +92,11 @@ pub const Token = union(TokenType) {
             '<' => .lessthan,
             '>' => .greaterthan,
             ':' => .colon,
-            else => blk: {
-                std.debug.print("Invalid char: {c}\n", .{char});
-                break :blk TokenizeError.UnknownToken;
+            '[' => .openBracket,
+            ']' => .closeBracket,
+            else => {
+                // std.debug.print("{c}: ", .{char});
+                return TokenizeError.UnknownToken;
             },
         };
     }
@@ -94,7 +105,7 @@ pub const Token = union(TokenType) {
         const eql = std.mem.eql;
         if (eql(u8, str, "return")) return .exit;
         if (eql(u8, str, "const")) return .constant;
-        if (eql(u8, str, "var")) return .variable;
+        if (eql(u8, str, "varbl")) return .variable;
         if (eql(u8, str, "fn")) return .fun;
         if (eql(u8, str, "if")) return .ifstmt;
         if (eql(u8, str, "import")) return .import;
@@ -137,10 +148,9 @@ pub fn Iterator(comptime typ: type) type {
             return ret;
         }
 
-        pub fn consume(self: *Iterator(typ), comptime expected: TokenType) !?typ {
-            if (typ != Token) return error.TokenIteratorOnly;
+        pub fn consume(self: *Iterator(typ), comptime expected: TokenType) error{ ExpectedToken, TokenIteratorOnly }!?typ {
+            if (typ != Token) return TokenizeError.TokenIteratorOnly;
             if (!checkType(self.peek().?, expected)) {
-                std.debug.print("Expected {any} got {any} \n", .{ expected, self.peek().? });
                 return TokenizeError.ExpectedToken;
             }
             return self.next();
@@ -172,8 +182,10 @@ pub const Tokenizer = struct {
     /// Releases allocated memory
     pub fn deinit(self: *Tokenizer) void {
         for (self.toks.items) |token| {
-            if (checkType(token, TokenType.ident))
+            if (checkType(token, .ident))
                 self.allocator.free(token.ident);
+            if (checkType(token, .stringLit))
+                self.allocator.free(token.stringLit);
         }
         self.toks.deinit();
     }
@@ -221,6 +233,17 @@ pub const Tokenizer = struct {
                     if (!checkType(token, TokenType.ident)) self.allocator.free(str);
                     buff.clearAndFree();
                 },
+                '"' => {
+                    _ = self.src.next();
+                    while (self.src.peek().? != '"')
+                        try buff.append(self.src.next().?);
+
+                    _ = self.src.next();
+                    // std.debug.print("{c}\n", .{self.src.peek().?});
+                    const token = Token{ .stringLit = try buff.toOwnedSlice() };
+                    try self.toks.append(token);
+                    buff.clearAndFree();
+                },
                 else => self.toks.append(try Token.fromChar(self.src.next().?)),
             };
         }
@@ -231,7 +254,10 @@ pub const Tokenizer = struct {
 test "Tokenize Expression" {
     const expect = std.testing.expect;
     const testSource: []const u8 = "return 120 + 150 - 260 * 12 / 5 + variable;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -266,8 +292,11 @@ test "Tokenize Expression" {
 
 test "Tokenize variable" {
     const expect = std.testing.expect;
-    const testSource: []const u8 = "var five = 5;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    const testSource: []const u8 = "varbl five = 5;";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -292,7 +321,10 @@ test "Tokenize variable" {
 test "Tokenize constant" {
     const expect = std.testing.expect;
     const testSource: []const u8 = "const five = 5;";
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
@@ -321,7 +353,10 @@ test "Tokenize Function" {
         \\  return 7;
         \\}
     ;
-    var tokenizer = Tokenizer.init(std.testing.allocator, testSource);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tokenizer = Tokenizer.init(allocator, testSource);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
     const expected = &[_]Token{
