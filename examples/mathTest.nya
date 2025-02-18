@@ -1,0 +1,13 @@
+import fn puts(str: [u8]) -> i32;
+
+fn test() -> i32 {
+    const: i32 pog = 5;
+    return pog;
+}
+
+fn main() -> i32 {
+    const: i32 num = 5;
+    const: i32 num2 = test();
+    puts("Hello World!");
+    return num2;
+}
