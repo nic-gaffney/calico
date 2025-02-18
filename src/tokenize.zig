@@ -11,6 +11,7 @@ pub const TokenType = enum {
     ident,
     intLit,
     // Keywords
+    ifstmt,
     constant,
     variable,
     exit,
@@ -22,6 +23,9 @@ pub const TokenType = enum {
     slash,
     semiCol,
     equal,
+    eqleql,
+    lessthan,
+    greaterthan,
     // Symbols
     openBrace,
     closeBrace,
@@ -35,6 +39,7 @@ pub const Token = union(TokenType) {
     ident: []const u8,
     intLit: i32,
     // Keywords
+    ifstmt,
     constant,
     variable,
     exit,
@@ -46,12 +51,44 @@ pub const Token = union(TokenType) {
     slash,
     semiCol,
     equal,
+    eqleql,
+    lessthan,
+    greaterthan,
     // Symbols
     openBrace,
     closeBrace,
     openParen,
     closeParen,
     arrow,
+
+    pub fn toTokenType(self: Token) TokenType {
+        switch (self) {
+            .ident => .ident,
+            .intLit => .intLit,
+            // Keywords
+            .ifstmt => .ifstmt,
+            .constant => .constant,
+            .variable => .variable,
+            .exit => .exit,
+            .fun => .fun,
+            // =>  Operators .=>
+            .plus => .plus,
+            .minus => .minus,
+            .star => .star,
+            .slash => .slash,
+            .semiCol => .semiCol,
+            .equal => .equal,
+            .eqleql => .eqleql,
+            .lessthan => .lessthan,
+            .greaterthan => .greaterthan,
+            // =>  Symbols .=>
+            .openBrace => .openBrace,
+            .closeBrace => .closeBrace,
+            .openParen => .openParen,
+            .closeParen => .closeParen,
+            .arrow => .arrow,
+        }
+    }
 
     pub fn fromChar(char: u8) !Token {
         return switch (char) {
@@ -65,6 +102,8 @@ pub const Token = union(TokenType) {
             '}' => .closeBrace,
             '(' => .openParen,
             ')' => .closeParen,
+            '<' => .lessthan,
+            '>' => .greaterthan,
             else => TokenizeError.UnknownToken,
         };
     }
@@ -75,6 +114,7 @@ pub const Token = union(TokenType) {
         if (eql(u8, str, "const")) return .constant;
         if (eql(u8, str, "var")) return .variable;
         if (eql(u8, str, "fn")) return .fun;
+        if (eql(u8, str, "if")) return .ifstmt;
         return Token{ .ident = str };
     }
 };
@@ -160,6 +200,15 @@ pub const Tokenizer = struct {
 
         while (self.src.peek()) |char| {
             try switch (char) {
+                '=' => {
+                    self.src.skip();
+                    if (self.src.peek().? != '=') {
+                        try self.toks.append(.equal);
+                        continue;
+                    }
+                    self.src.skip();
+                    try self.toks.append(.eqleql);
+                },
                 '-' => {
                     self.src.skip();
                     if (self.src.peek().? != '>') {

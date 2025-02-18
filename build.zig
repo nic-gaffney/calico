@@ -52,6 +52,8 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    codegen_unit_tests.root_module.addImport("llvm", llvm.module("llvm"));
+
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const run_token_unit_tests = b.addRunArtifact(token_unit_tests);
     const run_parse_unit_tests = b.addRunArtifact(parse_unit_tests);

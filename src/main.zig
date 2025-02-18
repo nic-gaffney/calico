@@ -59,11 +59,11 @@ pub fn main() !void {
 
     // Codegen
     var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
     var generator = gen.Generator.init(arena.allocator(), tree);
     defer generator.deinit();
     const code = try generator.generate();
     try outWriter.writeAll(code);
+    arena.deinit();
 
     const binFile = try getFileName(allocator, out_name, "");
     defer allocator.free(binFile);

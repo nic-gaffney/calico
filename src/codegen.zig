@@ -156,6 +156,30 @@ pub const Generator = struct {
         _ = if (self.currentFuncIsVoid) core.LLVMBuildRetVoid(self.builder);
     }
 
+    fn genIf(self: *Generator, stmt: parse.NodeStmt) error{ OutOfMemory, Immutable }!void {
+        const ifkind = stmt.kind.ifstmt;
+        const block = ifkind.body;
+        const expr = ifkind.expr;
+
+        const condition = self.genExpr(expr);
+        const func = self.currentFunc.?;
+
+        const then = core.LLVMAppendBasicBlock(func, "then");
+        const elsebb = core.LLVMAppendBasicBlock(func, "elsebb");
+        const cont = core.LLVMAppendBasicBlock(func, "continue");
+
+        _ = core.LLVMBuildCondBr(self.builder, condition, then, elsebb);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, then);
+        try self.genStmt(block.*);
+        _ = core.LLVMBuildBr(self.builder, cont);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, elsebb);
+        _ = core.LLVMBuildBr(self.builder, cont);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, cont);
+    }
+
     fn genStmt(self: *Generator, stmt: parse.NodeStmt) !void {
         try switch (stmt.kind) {
             .exit => |expr| self.genExit(expr),
@@ -163,6 +187,7 @@ pub const Generator = struct {
             .defValue => self.genValue(stmt),
             .defVar => self.genVar(stmt),
             .assignVar => self.genAssign(stmt),
+            .ifstmt => self.genIf(stmt),
             else => {},
         };
     }
@@ -176,6 +201,19 @@ pub const Generator = struct {
                 break :blk core.LLVMBuildLoad2(self.builder, toLLVMtype(expr.typ.?, table), ptr, "");
             },
             .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
+            .binaryOp => |exp| blk: {
+                const lhs = self.genExpr(exp.lhs.*);
+                const rhs = self.genExpr(exp.rhs.*);
+
+                break :blk switch (exp.op) {
+                    .plus => core.LLVMBuildAdd(self.builder, lhs, rhs, "add"),
+                    .minus => core.LLVMBuildSub(self.builder, lhs, rhs, "sub"),
+                    .star => core.LLVMBuildMul(self.builder, lhs, rhs, "mul"),
+                    .slash => core.LLVMBuildSDiv(self.builder, lhs, rhs, "div"),
+                    .eqleql => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
+                    else => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
+                };
+            },
         };
     }
 

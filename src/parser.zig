@@ -85,6 +85,7 @@ pub const NodeStmt = struct {
                 for (blockChildren) |child| try childrenArray.append(child);
             },
             .function => |fun| try childrenArray.append(fun.block.*.asNode()),
+            .ifstmt => |ifstmt| try childrenArray.append(ifstmt.body.*.asNode()),
         }
         return try childrenArray.toOwnedSlice();
     }
@@ -141,9 +142,40 @@ pub const Parser = struct {
         self.nodes.deinit();
     }
 
+    // fn parseExpr(self: *Parser) !NodeExpr {
+    //     var typ: ?TypeIdent = null;
+    //     const kind = try blk: {
+    //         try switch (self.tokens.peek().?) {
+    //             .intLit => {
+    //                 typ = TypeIdent{
+    //                     .ident = "i32",
+    //                     .list = false,
+    //                 };
+    //                 break :blk ExprKind{ .intLit = (try self.tokens.consume(.intLit)).? };
+    //             },
+    //             .ident => {
+    //                 const ident = (try self.tokens.consume(.ident)).?;
+    //                 typ = TypeIdent{
+    //                     .ident = "i32",
+    //                     .list = false,
+    //                 };
+    //                 break :blk ExprKind{ .ident = ident };
+    //             },
+    //             else => break :blk ParsingError.InvalidExpression,
+    //         };
+    //     };
+    //     return NodeExpr{
+    //         .id = self.reserveId(),
+    //         .kind = kind,
+    //         .isConst = kind.isConstant(),
+    //         .typ = typ,
+    //         .symtable = self.top,
+    //     };
+    // }
+
     fn parseExpr(self: *Parser) !NodeExpr {
         var typ: ?TypeIdent = null;
-        const kind = try blk: {
+        const kind: ExprKind = try blk: {
             try switch (self.tokens.peek().?) {
                 .intLit => {
                     typ = TypeIdent{
@@ -163,23 +195,87 @@ pub const Parser = struct {
                 else => break :blk ParsingError.InvalidExpression,
             };
         };
-        return NodeExpr{
+
+        const lhs = NodeExpr{
             .id = self.reserveId(),
+            .isConst = false,
             .kind = kind,
-            .isConst = kind.isConstant(),
-            .typ = typ,
             .symtable = self.top,
+            .typ = typ,
         };
+
+        const lhsptr = try self.allocator.create(NodeExpr);
+        lhsptr.* = lhs;
+
+        const precTable: []const []const tok.TokenType = &.{
+            &.{ .plus, .minus },
+            &.{ .star, .slash },
+            &.{.eqleql},
+        };
+
+        return try genBinOp(self, precTable[0], typ, lhsptr) //.
+        orelse try genBinOp(self, precTable[1], typ, lhsptr) //.
+        orelse try genBinOp(self, precTable[2], typ, lhsptr) //.
+        orelse lhs;
+    }
+
+    fn genBinOp(self: *Parser, comptime ops: []const tok.TokenType, typ: ?TypeIdent, lhs: *NodeExpr) ParsingError!?NodeExpr {
+        for (ops) |op|
+            if (self.tokens.peek().? == op) {
+                const oper = self.tokens.next();
+                const rhsptr = try self.allocator.create(NodeExpr);
+                rhsptr.* = try self.parseExpr();
+                const kind = ExprKind{
+                    .binaryOp = .{
+                        .lhs = lhs,
+                        .rhs = rhsptr,
+                        .op = oper.?,
+                    },
+                };
+                return NodeExpr{
+                    .id = self.reserveId(),
+                    .isConst = false,
+                    .kind = kind,
+                    .symtable = self.top,
+                    .typ = typ,
+                };
+            };
+        return null;
     }
 
     fn parseStmt(self: *Parser) ParsingError!NodeStmt {
         return switch (self.tokens.peek().?) {
+            .ifstmt => try self.parseIf(),
             .exit => try self.parseExit(),
             .constant => try self.parseConstant(),
             .variable => try self.parseVariable(),
             .ident => try self.parseAssign(),
             .fun => try self.parseFunc(),
+            .openBrace => try self.parseBlock(),
             else => ParsingError.InvalidStatement,
+        };
+    }
+
+    fn parseIf(self: *Parser) ParsingError!NodeStmt {
+        _ = try self.tokens.consume(.ifstmt); // if
+
+        _ = try self.tokens.consume(.openParen); // (
+        const expr = try self.parseExpr(); // EXPR
+        _ = try self.tokens.consume(.closeParen); // )
+
+        const body = try self.allocator.create(NodeStmt);
+        body.* = try self.parseStmt();
+
+        const kind = StmtKind{
+            .ifstmt = .{
+                .expr = expr,
+                .body = body,
+            },
+        };
+        return NodeStmt{
+            .id = self.reserveId(),
+            .kind = kind,
+            .symtable = self.top,
         };
     }
 
@@ -338,12 +434,19 @@ pub const NodeVar = struct {
     expr: NodeExpr,
 };
 
+pub const NodeIf = struct {
+    expr: NodeExpr,
+    body: *NodeStmt,
+};
+
 pub const NodeExit = NodeExpr;
 pub const NodeIntlit = Token;
 pub const NodeIdent = Token;
 pub const NodeBlock = []const NodeStmt;
+pub const NodeBinOp = Token;
 
 pub const StmtKind = union(enum) {
+    ifstmt: NodeIf,
     function: NodeFunction,
     exit: NodeExit,
     defValue: NodeValue,
@@ -355,6 +458,11 @@ pub const StmtKind = union(enum) {
 pub const ExprKind = union(enum) {
     intLit: NodeIntlit,
     ident: NodeIdent,
+    binaryOp: struct {
+        lhs: *NodeExpr,
+        rhs: *NodeExpr,
+        op: NodeBinOp,
+    },
 
     pub fn isConstant(self: ExprKind) bool {
         return switch (self) {
