@@ -13,7 +13,7 @@ pub fn main() !void {
     var allocator = arena.allocator();
     if (std.os.argv.len < 2) {
         std.debug.print(
-            \\info: Usage: calico [input file]
+            \\info: Usage: calico [input file] [output name (defaults to "out")]
             \\
         , .{});
         return;
@@ -47,6 +47,7 @@ pub fn main() !void {
     var tokenizer = tok.Tokenizer.init(allocator, all);
     defer tokenizer.deinit();
     const tokens = try tokenizer.tokenize();
+    // for (tokens) |tokn| std.debug.print("{s} ", .{tokn.toString()});
 
     // Parse
     // var arena = std.heap.ArenaAllocator.init(allocator);

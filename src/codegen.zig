@@ -104,7 +104,7 @@ pub const Generator = struct {
         const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.inferType(self.allocator, table), table, nodeVar.expr), nodeVar.ident.ident);
         const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
-        std.debug.print("\t\t\tGenerated Value {s}\n", .{nodeVar.ident.ident});
+        // std.debug.print("\t\t\tGenerated Value {s}\n", .{nodeVar.ident.ident});
         try self.references.put(symbol.id, ptr);
     }
 
@@ -215,7 +215,7 @@ pub const Generator = struct {
     }
 
     fn genStmt(self: *Generator, stmt: parse.NodeStmt) !void {
-        std.debug.print("======\n\tStmt: {any}\n======\n", .{stmt.kind});
+        // std.debug.print("======\n\tStmt: {any}\n======\n", .{stmt.kind});
         try switch (stmt.kind) {
             .exit => |expr| self.genExit(expr),
             .function => self.genFunc(stmt),
@@ -223,11 +223,10 @@ pub const Generator = struct {
             .defVar => self.genVar(stmt),
             .assignVar => self.genAssign(stmt),
             .ifstmt => self.genIf(stmt),
+            .block => |blk| self.genBlock(blk),
             .expr => |expression| {
                 _ = try self.genExpr(expression);
             },
-
-            else => {},
         };
     }
 
@@ -259,11 +258,11 @@ pub const Generator = struct {
                     "",
                 );
             },
-            .intLit => |int| core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), @intCast(int.intLit), 1),
+            .intLit => |int| core.LLVMConstInt(core.LLVMInt32Type(), @intCast(int.intLit), 1),
             .binaryOp => |exp| blk: {
                 const lhs = try self.genExpr(exp.lhs.*);
                 const rhs = try self.genExpr(exp.rhs.*);
-                std.debug.print("\n\n\tLHS: {any}\n\tRHS: {any}\n\tOP: {any}\n\n", .{ lhs, rhs, exp.op });
+                // std.debug.print("\n\n\tLHS: {any}\n\tRHS: {any}\n\tOP: {any}\n\n", .{ exp.lhs.*.kind, exp.rhs.*.kind, exp.op });
 
                 break :blk switch (exp.op) {
                     .plus => core.LLVMBuildAdd(self.builder, lhs, rhs, "add"),

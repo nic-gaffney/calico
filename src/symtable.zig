@@ -204,7 +204,7 @@ pub const Populator = struct {
                             try value.expr.inferType(self.allocator, table),
                             false,
                         );
-                        std.debug.print("Value: {s}\nSymbol: {any}\n", .{ value.ident.ident, symbol });
+                        // std.debug.print("Value: {s}\nSymbol: {any}\n", .{ value.ident.ident, symbol });
                         if (!try table.insert(value.ident.ident, symbol)) return error.FailedToInsert;
                     },
                     .block => {

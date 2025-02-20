@@ -1,0 +1,9 @@
+fn main() -> i32 {
+    if (6 == 7) {
+        return 1;
+    }
+    if (5 == 5) {
+        return 0;
+    }
+    return 2;
+}

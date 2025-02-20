@@ -234,8 +234,7 @@ pub const Parser = struct {
                     };
                     break :blk ExprKind{ .stringLit = (try self.tokens.consume(.stringLit)).? };
                 },
-                else => |expr| break :blk errorblk: {
-                    std.debug.print("Invalid Expression: {any}\n", .{expr});
+                else => break :blk errorblk: {
                     break :errorblk ParsingError.InvalidExpression;
                 },
             };
@@ -656,7 +655,7 @@ test "Parser" {
                     },
                     .symtable = symbTable,
                     .typ = TypeIdent{ .list = false, .ident = "i32" },
-                    .isConst = true,
+                    .isConst = false,
                 },
             },
         },

@@ -94,9 +94,9 @@ pub const Token = union(TokenType) {
             ':' => .colon,
             '[' => .openBracket,
             ']' => .closeBracket,
-            else => {
-                // std.debug.print("{c}: ", .{char});
-                return TokenizeError.UnknownToken;
+            else => errblk: {
+                std.debug.print("{c}: ", .{char});
+                break :errblk TokenizeError.UnknownToken;
             },
         };
     }
@@ -110,6 +110,39 @@ pub const Token = union(TokenType) {
         if (eql(u8, str, "if")) return .ifstmt;
         if (eql(u8, str, "import")) return .import;
         return Token{ .ident = str };
+    }
+
+    pub fn toString(self: Token) []const u8 {
+        return switch (self) {
+            .ident => "IDENT",
+            .stringLit => "STRINGlIT",
+            .intLit => "INTlIT",
+            .charLit => "CHARlIT",
+            .ifstmt => "IFSTMT",
+            .constant => "CONSTANT",
+            .variable => "VARIABLE",
+            .exit => "EXIT",
+            .fun => "FUN",
+            .import => "IMPORT",
+            .plus => "PLUS",
+            .minus => "MINUS",
+            .star => "STAR",
+            .slash => "SLASH",
+            .semiCol => "SEMIcOL",
+            .equal => "EQUAL",
+            .eqleql => "EQLEQL",
+            .lessthan => "LESSTHAN",
+            .greaterthan => "GREATERTHAN",
+            .openBrace => "OPENbRACE",
+            .closeBrace => "CLOSEbRACE",
+            .openParen => "OPENpAREN",
+            .closeParen => "CLOSEpAREN",
+            .openBracket => "OPENbRACKET",
+            .closeBracket => "CLOSEbRACKET",
+            .arrow => "ARROW",
+            .colon => "COLON",
+            .comma => "COMMA",
+        };
     }
 };
 
