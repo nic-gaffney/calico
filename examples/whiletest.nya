@@ -1,0 +1,10 @@
+import fn puts(str: [u8]) -> i32;
+
+fn main() -> i32 {
+    varbl: i32 i = 0;
+    while (i < 10) {
+        puts("Hi ");
+        i = i + 1;
+    }
+    return 0;
+}

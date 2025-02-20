@@ -190,6 +190,32 @@ pub const Generator = struct {
         }
     }
 
+    fn genWhile(self: *Generator, stmt: parse.NodeStmt) CodegenError!void {
+        const whilekind = stmt.kind.whileStmt;
+        const block = whilekind.body;
+        const expr = whilekind.expr;
+
+        const condition = try self.genExpr(expr);
+        const func = self.currentFunc.?;
+
+        const then = core.LLVMAppendBasicBlock(func, "then");
+        const elsebb = core.LLVMAppendBasicBlock(func, "elsebb");
+        const cont = core.LLVMAppendBasicBlock(func, "continue");
+
+        _ = core.LLVMBuildCondBr(self.builder, condition, then, elsebb);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, then);
+        try self.genStmt(block.*);
+        const newcondition = try self.genExpr(expr);
+        _ = core.LLVMBuildCondBr(self.builder, newcondition, then, elsebb);
+        _ = core.LLVMBuildBr(self.builder, cont);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, elsebb);
+        _ = core.LLVMBuildBr(self.builder, cont);
+
+        _ = core.LLVMPositionBuilderAtEnd(self.builder, cont);
+    }
+
     fn genIf(self: *Generator, stmt: parse.NodeStmt) CodegenError!void {
         const ifkind = stmt.kind.ifstmt;
         const block = ifkind.body;
@@ -223,6 +249,7 @@ pub const Generator = struct {
             .defVar => self.genVar(stmt),
             .assignVar => self.genAssign(stmt),
             .ifstmt => self.genIf(stmt),
+            .whileStmt => self.genWhile(stmt),
             .block => |blk| self.genBlock(blk),
             .expr => |expression| {
                 _ = try self.genExpr(expression);
@@ -270,6 +297,7 @@ pub const Generator = struct {
                     .star => core.LLVMBuildMul(self.builder, lhs, rhs, "mul"),
                     .slash => core.LLVMBuildSDiv(self.builder, lhs, rhs, "div"),
                     .eqleql => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
+                    .lessthan => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntSLT, lhs, rhs, "slt"),
                     else => return error.Unimplemented,
                 };
             },

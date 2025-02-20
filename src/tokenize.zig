@@ -20,6 +20,7 @@ pub const TokenType = enum {
     exit,
     fun,
     import,
+    whilestmt,
     // Operators
     plus,
     minus,
@@ -55,6 +56,7 @@ pub const Token = union(TokenType) {
     exit,
     fun,
     import,
+    whilestmt,
     // Operators
     plus,
     minus,
@@ -109,6 +111,7 @@ pub const Token = union(TokenType) {
         if (eql(u8, str, "fn")) return .fun;
         if (eql(u8, str, "if")) return .ifstmt;
         if (eql(u8, str, "import")) return .import;
+        if (eql(u8, str, "while")) return .whilestmt;
         return Token{ .ident = str };
     }
 
@@ -124,6 +127,7 @@ pub const Token = union(TokenType) {
             .exit => "EXIT",
             .fun => "FUN",
             .import => "IMPORT",
+            .whilestmt => "WHILESTMT",
             .plus => "PLUS",
             .minus => "MINUS",
             .star => "STAR",

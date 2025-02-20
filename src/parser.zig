@@ -109,6 +109,7 @@ pub const NodeStmt = struct {
                 for (blockChildren) |child| try childrenArray.append(child);
             },
             .ifstmt => |ifstmt| try childrenArray.append(ifstmt.body.*.asNode()),
+            .whileStmt => |whilestmt| try childrenArray.append(whilestmt.body.*.asNode()),
             .function => |fun| if (fun.block == null) {} else try childrenArray.append(fun.block.?.asNode()),
             .expr => |expr| try childrenArray.append(expr.asNode()),
         }
@@ -254,7 +255,7 @@ pub const Parser = struct {
         const precTable: []const []const tok.TokenType = &.{
             &.{ .plus, .minus },
             &.{ .star, .slash },
-            &.{.eqleql},
+            &.{ .eqleql, .lessthan },
         };
 
         return try self.genBinOp(precTable[0], typ, lhsptr) //.
@@ -293,6 +294,7 @@ pub const Parser = struct {
     fn parseStmt(self: *Parser) ParsingError!NodeStmt {
         return switch (self.tokens.peek().?) {
             .ifstmt => try self.parseIf(),
+            .whilestmt => try self.parseWhile(),
             .exit => try self.parseExit(),
             .constant => try self.parseConstant(),
             .variable => try self.parseVariable(),
@@ -318,6 +320,29 @@ pub const Parser = struct {
         };
     }
 
+    fn parseWhile(self: *Parser) ParsingError!NodeStmt {
+        _ = try self.tokens.consume(.whilestmt); // if
+
+        _ = try self.tokens.consume(.openParen); // (
+        const expr = try self.parseExpr(); // EXPR
+        _ = try self.tokens.consume(.closeParen); // )
+
+        const body = try self.allocator.create(NodeStmt);
+        body.* = try self.parseStmt();
+
+        const kind = StmtKind{
+            .whileStmt = .{
+                .expr = expr,
+                .body = body,
+            },
+        };
+        return NodeStmt{
+            .id = self.reserveId(),
+            .kind = kind,
+            .symtable = self.top,
+        };
+    }
+
     fn parseIf(self: *Parser) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.ifstmt); // if
 
@@ -340,6 +365,7 @@ pub const Parser = struct {
             .symtable = self.top,
         };
     }
+
     fn parseFunc(self: *Parser, external: bool) ParsingError!NodeStmt {
         if (external) _ = try self.tokens.consume(.import);
         var typ: ?TypeIdent = null;
@@ -582,6 +608,11 @@ pub const NodeIf = struct {
     body: *NodeStmt,
 };
 
+pub const NodeWhile = struct {
+    expr: NodeExpr,
+    body: *NodeStmt,
+};
+
 pub const NodeExit = NodeExpr;
 pub const NodeIntlit = Token;
 pub const NodeStringlit = Token;
@@ -596,6 +627,7 @@ pub const NodeCall = struct {
 
 pub const StmtKind = union(enum) {
     ifstmt: NodeIf,
+    whileStmt: NodeWhile,
     function: NodeFunction,
     exit: NodeExit,
     defValue: NodeValue,

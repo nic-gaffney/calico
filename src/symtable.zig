@@ -233,6 +233,7 @@ pub const Populator = struct {
                     .exit => |exit| _ = try exit.inferType(self.allocator, table),
                     .expr => {},
                     .ifstmt => for (try stmt.children(self.allocator)) |c| try self.populateSymtable(&c),
+                    .whileStmt => for (try stmt.children(self.allocator)) |c| try self.populateSymtable(&c),
 
                     // else => |unim| return errorblk: {
                     //     std.debug.print("Error: Unimplemented: {any}\n", .{unim});
