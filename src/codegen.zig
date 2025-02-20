@@ -199,19 +199,14 @@ pub const Generator = struct {
         const func = self.currentFunc.?;
 
         const then = core.LLVMAppendBasicBlock(func, "then");
-        const elsebb = core.LLVMAppendBasicBlock(func, "elsebb");
         const cont = core.LLVMAppendBasicBlock(func, "continue");
 
-        _ = core.LLVMBuildCondBr(self.builder, condition, then, elsebb);
+        _ = core.LLVMBuildCondBr(self.builder, condition, then, cont);
 
         _ = core.LLVMPositionBuilderAtEnd(self.builder, then);
         try self.genStmt(block.*);
         const newcondition = try self.genExpr(expr);
-        _ = core.LLVMBuildCondBr(self.builder, newcondition, then, elsebb);
-        _ = core.LLVMBuildBr(self.builder, cont);
-
-        _ = core.LLVMPositionBuilderAtEnd(self.builder, elsebb);
-        _ = core.LLVMBuildBr(self.builder, cont);
+        _ = core.LLVMBuildCondBr(self.builder, newcondition, then, cont);
 
         _ = core.LLVMPositionBuilderAtEnd(self.builder, cont);
     }
@@ -298,6 +293,7 @@ pub const Generator = struct {
                     .slash => core.LLVMBuildSDiv(self.builder, lhs, rhs, "div"),
                     .eqleql => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntEQ, lhs, rhs, "eql"),
                     .lessthan => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntSLT, lhs, rhs, "slt"),
+                    .greaterthan => core.LLVMBuildICmp(self.builder, types.LLVMIntPredicate.LLVMIntSGT, lhs, rhs, "sgt"),
                     else => return error.Unimplemented,
                 };
             },

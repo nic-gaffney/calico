@@ -255,7 +255,7 @@ pub const Parser = struct {
         const precTable: []const []const tok.TokenType = &.{
             &.{ .plus, .minus },
             &.{ .star, .slash },
-            &.{ .eqleql, .lessthan },
+            &.{ .eqleql, .lessthan, .greaterthan },
         };
 
         return try self.genBinOp(precTable[0], typ, lhsptr) //.
