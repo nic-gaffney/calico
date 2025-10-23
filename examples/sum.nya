@@ -1,12 +1,11 @@
 fn main() -> i32 {
-    const input = 10;
+    const: i32 fake = "fake number";
+    const: i32 input = 10;
     varbl: i32 sum = 0;
     varbl: i32 i = 0;
-
     while (i < input) {
         sum = sum + i;
         i = i + 1;
     }
-
     return sum;
 }

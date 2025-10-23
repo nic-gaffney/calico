@@ -1,4 +1,6 @@
+// TODO: Fork and fix this LLVM lib.
 const std = @import("std");
+const util = @import("utils.zig");
 const parse = @import("parser.zig");
 const symb = @import("symtable.zig");
 const llvm = @import("llvm");
@@ -102,6 +104,7 @@ pub const Generator = struct {
         const symbol = table.getValue(nodeVar.ident.ident).?;
         // const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ.?, table), nodeVar.ident.ident);
         const ptr = try self.genAlloc(toLLVMtype(nodeVar.expr.typ orelse try nodeVar.expr.inferType(self.allocator, table), table, nodeVar.expr), nodeVar.ident.ident);
+        std.debug.print("{any}\n", .{nodeVar.expr});
         const value = try self.genExpr(nodeVar.expr);
         _ = core.LLVMBuildStore(self.builder, value, ptr);
         // std.debug.print("\t\t\tGenerated Value {s}\n", .{nodeVar.ident.ident});
@@ -156,7 +159,7 @@ pub const Generator = struct {
             block = fun.block.?;
             codeSlice = block.kind.block;
         }
-        const funcName: [*:0]const u8 = try self.allocator.dupeZ(u8, fun.ident.ident);
+        const funcName: [*:0]const u8 = "main";
 
         const retType = toLLVMtype(fun.retType.?, table, null);
         var params = std.ArrayList(types.LLVMTypeRef).init(self.allocator);
@@ -255,7 +258,7 @@ pub const Generator = struct {
     fn genExpr(self: *Generator, expr: parse.NodeExpr) !types.LLVMValueRef {
         return switch (expr.kind) {
             .ident => |id| blk: {
-                // std.debug.print("getValue({s})\n", .{id.ident});
+                std.debug.print("getValue({s})\n", .{id.ident});
                 const table = expr.symtable;
 
                 // std.debug.print("\n\nEXPERTABLE\n\n", .{});
@@ -322,11 +325,20 @@ pub const Generator = struct {
                 const function = core.LLVMGetNamedFunction(self.module, ident);
                 var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
                 for (call.args.items, functype.input) |arg, intype| {
-                    if (!std.meta.eql(expr.symtable.getType(arg.typ.?).?, intype)) return CodegenError.IncorrectType;
+                    if (!std.meta.eql(expr.symtable.getType(arg.typ.?).?, intype)) return {
+                        try util.comptimeError(.{
+                            .line = expr.line,
+                            .err = CodegenError.IncorrectType,
+                            .got = try intype.toString(self.allocator),
+                            .exp = arg.typ.?.ident,
+                        });
+                        break :blk CodegenError.IncorrectType;
+                    };
                     try args.append(try self.genExpr(arg));
                 }
+                std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
+                std.debug.print("{any}\n", .{function});
                 const funcType = core.LLVMGlobalGetValueType(function);
-                // std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
 
                 const llvmCall = core.LLVMBuildCall2(
                     self.builder,

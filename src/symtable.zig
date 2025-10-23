@@ -254,14 +254,14 @@ pub const Populator = struct {
         args: []const pars.FunctionArg,
         retType: ?pars.TypeIdent,
     ) !Symbol {
-        var inputArr = std.ArrayList(SymbType).init(self.allocator);
+        var inputArr = std.ArrayList(SymbType){};
         for (args) |arg| {
             // std.debug.print("{s}: {s}\n", .{ arg.ident, arg.typ.ident });
             const argSymb = try self.buildValueSymb(table, arg.typ, false);
             if (!try table.insert(arg.ident, argSymb)) return error.FailedToInsert;
-            try inputArr.append(table.getType(arg.typ) orelse SymbType.Void);
+            try inputArr.append(self.allocator, table.getType(arg.typ) orelse SymbType.Void);
         }
-        const input = try inputArr.toOwnedSlice();
+        const input = try inputArr.toOwnedSlice(self.allocator);
 
         const output = try self.allocator.create(SymbType);
         output.* = if (retType) |typ| table.getType(typ).? else SymbType.Void;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const u = @import("utils.zig");
 
 pub const TokenizeError = error{
     UnknownToken,
@@ -41,6 +42,7 @@ pub const TokenType = enum {
     arrow,
     colon,
     comma,
+    newLine,
 };
 
 pub const Token = union(TokenType) {
@@ -77,6 +79,7 @@ pub const Token = union(TokenType) {
     arrow,
     colon,
     comma,
+    newLine,
 
     pub fn fromChar(char: u8) !Token {
         return switch (char) {
@@ -96,6 +99,7 @@ pub const Token = union(TokenType) {
             ':' => .colon,
             '[' => .openBracket,
             ']' => .closeBracket,
+            '\n' => .newLine,
             else => errblk: {
                 std.debug.print("{c}: ", .{char});
                 break :errblk TokenizeError.UnknownToken;
@@ -146,6 +150,7 @@ pub const Token = union(TokenType) {
             .arrow => "ARROW",
             .colon => "COLON",
             .comma => "COMMA",
+            .newLine => "\n",
         };
     }
 };
@@ -162,6 +167,7 @@ pub fn Iterator(comptime typ: type) type {
     return struct {
         items: []const typ,
         index: usize = 0,
+        line: u32 = 1,
 
         /// Initialize tokenizer with a slice
         pub fn init(items: []const typ) Iterator(typ) {
@@ -169,13 +175,20 @@ pub fn Iterator(comptime typ: type) type {
         }
 
         /// Get current item
-        pub fn peekAhead(self: Iterator(typ), ahead: u32) ?typ {
+        pub fn peekAhead(self: *Iterator(typ), ahead: u32) ?typ {
             if (self.index + ahead >= self.items.len) return null;
+            if (typ == Token) {
+                if (self.items[self.index + ahead] == .newLine) {
+                    self.line += 1;
+                    self.skip();
+                    return self.peekAhead(ahead);
+                }
+            }
             return self.items[self.index + ahead];
         }
 
-        pub fn peek(self: Iterator(typ)) ?typ {
-            return peekAhead(self, 0);
+        pub fn peek(self: *Iterator(typ)) ?typ {
+            return self.peekAhead(0);
         }
 
         /// Get current item and iterate index
@@ -188,6 +201,8 @@ pub fn Iterator(comptime typ: type) type {
         pub fn consume(self: *Iterator(typ), comptime expected: TokenType) error{ ExpectedToken, TokenIteratorOnly }!?typ {
             if (typ != Token) return TokenizeError.TokenIteratorOnly;
             if (!checkType(self.peek().?, expected)) {
+                // std.debug.print("Expected {}, got {}\n", .{ expected, self.peek().? });
+                u.comptimeError(.{ .line = 0, .err = TokenizeError.ExpectedToken, .exp = expected, .got = self.peek().?, });
                 return TokenizeError.ExpectedToken;
             }
             return self.next();
@@ -202,6 +217,7 @@ pub fn Iterator(comptime typ: type) type {
 
 /// Tokenizes a string of source code
 pub const Tokenizer = struct {
+    line: u32 = 1,
     src: Iterator(u8),
     allocator: std.mem.Allocator,
     toks: std.ArrayList(Token),
@@ -212,7 +228,7 @@ pub const Tokenizer = struct {
         return Tokenizer{
             .src = Iterator(u8).init(src),
             .allocator = allocator,
-            .toks = std.ArrayList(Token).init(allocator),
+            .toks = std.ArrayList(Token){},
         };
     }
 
@@ -224,64 +240,64 @@ pub const Tokenizer = struct {
             if (checkType(token, .stringLit))
                 self.allocator.free(token.stringLit);
         }
-        self.toks.deinit();
+        self.toks.deinit(self.allocator);
     }
 
     /// Returns an ArrayList of tokens
     pub fn tokenize(self: *Tokenizer) ![]Token {
-        var buff = std.ArrayList(u8).init(self.allocator);
-        defer buff.deinit();
+        var buff = std.ArrayList(u8){};
+        defer buff.deinit(self.allocator);
 
         while (self.src.peek()) |char| {
             try switch (char) {
                 '=' => {
                     self.src.skip();
                     if (self.src.peek().? != '=') {
-                        try self.toks.append(.equal);
+                        try self.toks.append(self.allocator, .equal);
                         continue;
                     }
                     self.src.skip();
-                    try self.toks.append(.eqleql);
+                    try self.toks.append(self.allocator, .eqleql);
                 },
                 '-' => {
                     self.src.skip();
                     if (self.src.peek().? != '>') {
-                        try self.toks.append(.minus);
+                        try self.toks.append(self.allocator, .minus);
                         continue;
                     }
                     self.src.skip();
-                    try self.toks.append(.arrow);
+                    try self.toks.append(self.allocator, .arrow);
                 },
-                ' ', '\n', '\t' => self.src.skip(),
+                ' ', '\t' => self.src.skip(),
                 '0'...'9' => {
                     while (std.ascii.isDigit(self.src.peek().?))
-                        try buff.append(self.src.next().?);
+                        try buff.append(self.allocator, self.src.next().?);
 
                     const num: i32 = try std.fmt.parseInt(i32, buff.items, 10);
-                    try self.toks.append(.{ .intLit = num });
-                    buff.clearAndFree();
+                    try self.toks.append(self.allocator, .{ .intLit = num });
+                    buff.clearAndFree(self.allocator);
                 },
                 'a'...'z', 'A'...'Z' => {
                     while (std.ascii.isAlphanumeric(self.src.peek().?))
-                        try buff.append(self.src.next().?);
-                    const str = try buff.toOwnedSlice();
+                        try buff.append(self.allocator, self.src.next().?);
+                    const str = try buff.toOwnedSlice(self.allocator);
                     const token = Token.fromStr(str);
-                    try self.toks.append(token);
+                    try self.toks.append(self.allocator, token);
                     if (!checkType(token, TokenType.ident)) self.allocator.free(str);
-                    buff.clearAndFree();
+                    buff.clearAndFree(self.allocator);
                 },
                 '"' => {
                     _ = self.src.next();
                     while (self.src.peek().? != '"')
-                        try buff.append(self.src.next().?);
+                        try buff.append(self.allocator, self.src.next().?);
 
                     _ = self.src.next();
                     // std.debug.print("{c}\n", .{self.src.peek().?});
-                    const token = Token{ .stringLit = try buff.toOwnedSlice() };
-                    try self.toks.append(token);
-                    buff.clearAndFree();
+                    const token = Token{ .stringLit = try buff.toOwnedSlice(self.allocator) };
+                    try self.toks.append(self.allocator, token);
+                    buff.clearAndFree(self.allocator);
                 },
-                else => self.toks.append(try Token.fromChar(self.src.next().?)),
+                else => self.toks.append(self.allocator, try Token.fromChar(self.src.next().?)),
             };
         }
         return self.toks.items;

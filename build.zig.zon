@@ -1,12 +1,13 @@
 .{
-    .name = "calico",
+    .name = .calico,
     .version = "0.0.1",
+    .fingerprint = 0x3edb7e13aa41863f,
 
     .dependencies = .{
-        .@"llvm-zig" = .{
-            .url = "https://github.com/dwclake/llvm-zig/archive/refs/heads/main.zip",
-            .hash = "12203b7d504abd379ca74e8768f3d58bf6c2cff58dd75a5c55740b1945f2be8356f0",
-        },
+        // .llvm = .{
+        //     .url = "git+https://github.com/kassane/llvm-zig#1f587a286f3b5d3bc2b6ecaae6655bddfc86120a",
+        //     .hash = "llvm_zig-1.0.0-IXgkxOJiBACZm15g-MVcLK9RygKIMBAD04sSjEFGjBQZ",
+        // },
     },
     .paths = .{
         "",

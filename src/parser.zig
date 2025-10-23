@@ -1,6 +1,7 @@
 const std = @import("std");
 const tok = @import("tokenize.zig");
 const symb = @import("symtable.zig");
+const util = @import("utils.zig");
 const Iterator = tok.Iterator;
 const Token = tok.Token;
 
@@ -34,18 +35,19 @@ pub const Node = union(enum) {
     Expr: NodeExpr,
     Stmt: NodeStmt,
     pub fn children(self: Node, allocator: std.mem.Allocator) ![]Node {
-        var childrenArray = std.ArrayList(Node).init(allocator);
-        defer childrenArray.deinit();
+        var childrenArray = std.ArrayList(Node){};
+        defer childrenArray.deinit(allocator);
         switch (self) {
-            .Expr => |expr| try childrenArray.appendSlice(try expr.children(allocator)),
-            .Stmt => |stmt| try childrenArray.appendSlice(try stmt.children(allocator)),
+            .Expr => |expr| try childrenArray.appendSlice(allocator, try expr.children(allocator)),
+            .Stmt => |stmt| try childrenArray.appendSlice(allocator, try stmt.children(allocator)),
         }
-        return try childrenArray.toOwnedSlice();
+        return try childrenArray.toOwnedSlice(allocator);
     }
 };
 
 pub const NodeExpr = struct {
     id: u32,
+    line: u32,
     kind: ExprKind,
     symtable: *symb.SymbolTable,
     typ: ?TypeIdent,
@@ -56,13 +58,14 @@ pub const NodeExpr = struct {
     }
 
     pub fn children(self: NodeExpr, allocator: std.mem.Allocator) ![]Node {
-        var childrenArray = std.ArrayList(Node).init(allocator);
-        defer childrenArray.deinit();
+        var childrenArray = std.ArrayList(Node){};
+        defer childrenArray.deinit(allocator);
         switch (self.kind) {
             else => {},
         }
-        return try childrenArray.toOwnedSlice();
+        return try childrenArray.toOwnedSlice(allocator);
     }
+
     pub fn inferType(self: NodeExpr, allocator: std.mem.Allocator, table: *symb.SymbolTable) TypeError!TypeIdent {
         const expectedType = try switch (self.kind) {
             .call => |call| if (table.getValue(call.ident.ident)) |symbol| try symbol.typ.Function.output.toTypeIdent(allocator) else TypeError.UnknownIdentifier,
@@ -72,23 +75,22 @@ pub const NodeExpr = struct {
             .stringLit => TypeIdent{ .ident = "[u8]", .list = true },
         };
         if (self.typ) |typ| {
-            return if (std.mem.eql(u8, typ.ident, expectedType.ident)) expectedType else TypeError.IncorrectType;
+            return if (std.mem.eql(u8, typ.ident, expectedType.ident)) expectedType else blk: {
+                util.comptimeError(.{
+                    .line = self.line,
+                    .err = TypeError.IncorrectType,
+                    .exp = expectedType.ident,
+                    .got = typ.ident,
+                });
+                break :blk TypeError.IncorrectType;
+            };
         } else return expectedType;
     }
 };
 
-pub fn map(comptime T: type, comptime F: type, slice: []const F, func: fn (F) T) []const T {
-    var list: [64]T = undefined;
-    var max: usize = 0;
-    for (slice, 0..) |item, i| {
-        list[i] = func(item);
-        max = i + 1;
-    }
-    return list[0..max];
-}
-
 pub const NodeStmt = struct {
     id: u32,
+    line: u32,
     kind: StmtKind,
     symtable: *symb.SymbolTable,
 
@@ -97,23 +99,23 @@ pub const NodeStmt = struct {
     }
 
     pub fn children(self: NodeStmt, allocator: std.mem.Allocator) ![]Node {
-        var childrenArray = std.ArrayList(Node).init(allocator);
-        defer childrenArray.deinit();
+        var childrenArray = std.ArrayList(Node){};
+        defer childrenArray.deinit(allocator);
         switch (self.kind) {
-            .exit => |exit| try childrenArray.append(exit.asNode()),
-            .defValue => |value| try childrenArray.append(value.expr.asNode()),
-            .defVar => |variable| try childrenArray.append(variable.expr.asNode()),
-            .assignVar => |assign| try childrenArray.append(assign.expr.asNode()),
+            .exit => |exit| try childrenArray.append(allocator, exit.asNode()),
+            .defValue => |value| try childrenArray.append(allocator, value.expr.asNode()),
+            .defVar => |variable| try childrenArray.append(allocator, variable.expr.asNode()),
+            .assignVar => |assign| try childrenArray.append(allocator, assign.expr.asNode()),
             .block => |block| {
-                const blockChildren = map(Node, NodeStmt, block, NodeStmt.asNode);
-                for (blockChildren) |child| try childrenArray.append(child);
+                const blockChildren = util.map(Node, NodeStmt, block, NodeStmt.asNode);
+                for (blockChildren) |child| try childrenArray.append(allocator, child);
             },
-            .ifstmt => |ifstmt| try childrenArray.append(ifstmt.body.*.asNode()),
-            .whileStmt => |whilestmt| try childrenArray.append(whilestmt.body.*.asNode()),
-            .function => |fun| if (fun.block == null) {} else try childrenArray.append(fun.block.?.asNode()),
-            .expr => |expr| try childrenArray.append(expr.asNode()),
+            .ifstmt => |ifstmt| try childrenArray.append(allocator, ifstmt.body.*.asNode()),
+            .whileStmt => |whilestmt| try childrenArray.append(allocator, whilestmt.body.*.asNode()),
+            .function => |fun| if (fun.block == null) {} else try childrenArray.append(allocator, fun.block.?.asNode()),
+            .expr => |expr| try childrenArray.append(allocator, expr.asNode()),
         }
-        return try childrenArray.toOwnedSlice();
+        return try childrenArray.toOwnedSlice(allocator);
     }
 };
 
@@ -124,6 +126,7 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     nodes: std.ArrayList(NodeStmt),
     nextId: u32 = 1,
+    line: u32 = 1,
 
     fn reserveId(self: *Parser) u32 {
         defer self.nextId += 1;
@@ -135,7 +138,7 @@ pub const Parser = struct {
             .top = symbolTable,
             .allocator = allocator,
             .tokens = Iterator(Token).init(tokens),
-            .nodes = std.ArrayList(NodeStmt).init(allocator),
+            .nodes = std.ArrayList(NodeStmt){},
             .id = 0,
         };
     }
@@ -173,9 +176,9 @@ pub const Parser = struct {
     fn parseCall(self: *Parser, typ: ?TypeIdent, expr: NodeExpr) ParsingError!NodeExpr {
         if (self.tokens.peek().? != .openParen) return expr;
         _ = try self.tokens.consume(.openParen);
-        var args = std.ArrayList(NodeExpr).init(self.allocator);
+        var args = std.ArrayList(NodeExpr){};
         while (self.tokens.peek().? != .closeParen) {
-            try args.append(try self.parseExpr());
+            try args.append(self.allocator, try self.parseExpr());
             if (self.tokens.peek().? != .comma) break;
         }
         _ = try self.tokens.consume(.closeParen);
@@ -184,6 +187,7 @@ pub const Parser = struct {
         return NodeExpr{
             .kind = kind,
             .isConst = false,
+            .line = self.tokens.line,
             .typ = typ,
             .id = self.reserveId(),
             .symtable = self.top,
@@ -212,15 +216,15 @@ pub const Parser = struct {
                             .call = .{
                                 .ident = ident,
                                 .args = innerblk: {
-                                    var argExprs = std.ArrayList(NodeExpr).init(self.allocator);
+                                    var argExprs = std.ArrayList(NodeExpr){};
                                     while (!tok.checkType(self.tokens.peek().?, .closeParen)) {
-                                        try argExprs.append(try self.parseExpr());
+                                        try argExprs.append(self.allocator, try self.parseExpr());
                                         if (tok.checkType(self.tokens.peek().?, .closeParen)) break;
                                         _ = try self.tokens.consume(.comma);
                                     }
                                     _ = try self.tokens.consume(.closeParen);
 
-                                    break :innerblk try argExprs.clone();
+                                    break :innerblk try argExprs.clone(self.allocator);
                                 },
                             },
                         };
@@ -243,6 +247,7 @@ pub const Parser = struct {
 
         const lhs = NodeExpr{
             .id = self.reserveId(),
+            .line = self.tokens.line,
             .isConst = false,
             .kind = kind,
             .symtable = self.top,
@@ -282,6 +287,7 @@ pub const Parser = struct {
                 };
                 return NodeExpr{
                     .id = self.reserveId(),
+                    .line = self.tokens.line,
                     .isConst = false,
                     .kind = kind,
                     .symtable = self.top,
@@ -303,7 +309,7 @@ pub const Parser = struct {
                     break :blk try self.parseAssign();
                 break :blk try self.parseExprStmt();
             },
-            .openBrace => self.parseBlock(),
+            .openBrace => self.parseBlock(false),
             .fun => try self.parseFunc(false),
             .import => try self.parseFunc(true),
             else => self.parseExprStmt(),
@@ -315,6 +321,7 @@ pub const Parser = struct {
         _ = try self.tokens.consume(.semiCol);
         return NodeStmt{
             .id = self.reserveId(),
+            .line = self.tokens.line,
             .symtable = self.top,
             .kind = kind,
         };
@@ -337,6 +344,7 @@ pub const Parser = struct {
             },
         };
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = self.top,
@@ -360,6 +368,7 @@ pub const Parser = struct {
             },
         };
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = self.top,
@@ -368,12 +377,13 @@ pub const Parser = struct {
 
     fn parseFunc(self: *Parser, external: bool) ParsingError!NodeStmt {
         if (external) _ = try self.tokens.consume(.import);
+        var returns = false;
         var typ: ?TypeIdent = null;
         _ = try self.tokens.consume(.fun);
         const ident = (try self.tokens.consume(.ident)).?;
         _ = try self.tokens.consume(.openParen);
-        var args = std.ArrayList(FunctionArg).init(self.allocator);
-        defer args.deinit();
+        var args = std.ArrayList(FunctionArg){};
+        defer args.deinit(self.allocator);
         while (!tok.checkType(self.tokens.peek().?, .closeParen)) {
             const argIdent: Token = (try self.tokens.consume(.ident)).?;
             _ = try self.tokens.consume(.colon);
@@ -382,12 +392,13 @@ pub const Parser = struct {
                 .ident = argIdent.ident,
                 .typ = argTypIdent,
             };
-            try args.append(funcArg);
+            try args.append(self.allocator, funcArg);
             if (!tok.checkType(self.tokens.peek().?, .comma)) break;
             _ = try self.tokens.consume(.comma);
         }
         _ = try self.tokens.consume(.closeParen);
         if (tok.checkType(self.tokens.peek().?, .arrow)) {
+            returns = true;
             self.tokens.skip();
             typ = try self.parseType();
         }
@@ -395,11 +406,12 @@ pub const Parser = struct {
         if (external) {
             _ = try self.tokens.consume(.semiCol);
             return NodeStmt{
+                .line = self.tokens.line,
                 .id = self.reserveId(),
                 .kind = StmtKind{
                     .function = .{
                         .ident = ident,
-                        .args = try args.toOwnedSlice(),
+                        .args = try args.toOwnedSlice(self.allocator),
                         .retType = typ,
                         .block = null,
                     },
@@ -409,12 +421,12 @@ pub const Parser = struct {
         }
 
         const block = try self.allocator.create(NodeStmt);
-        block.* = try self.parseBlock();
+        block.* = try self.parseBlock(returns);
 
         const kind = StmtKind{
             .function = .{
                 .ident = ident,
-                .args = try args.toOwnedSlice(),
+                .args = try args.toOwnedSlice(self.allocator),
                 .retType = typ,
                 .block = block,
             },
@@ -422,25 +434,38 @@ pub const Parser = struct {
 
         return NodeStmt{
             .id = self.reserveId(),
+            .line = self.tokens.line,
             .kind = kind,
             .symtable = self.top,
         };
     }
 
-    fn parseBlock(self: *Parser) ParsingError!NodeStmt {
+    fn parseBlock(self: *Parser, returns: bool) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.openBrace);
-        var stmtArr = std.ArrayList(NodeStmt).init(self.allocator);
+        var stmtArr = std.ArrayList(NodeStmt){};
         const child = try self.top.makeChild();
         self.top = child;
         while (!tok.checkType(self.tokens.peek().?, .closeBrace))
-            try stmtArr.append(try self.parseStmt());
+            try stmtArr.append(self.allocator, try self.parseStmt());
         self.top = self.top.parent().?;
         _ = try self.tokens.consume(.closeBrace);
+        if (returns) {
+            if (blk: {
+                for (stmtArr.items) |it| {
+                    if (switch (it.kind) {
+                        .exit => true,
+                        else => false,
+                    }) break :blk true;
+                }
+                break :blk false;
+            }) {} else return ParsingError.ExpectedExit;
+        }
         const kind = StmtKind{
-            .block = try stmtArr.toOwnedSlice(),
+            .block = try stmtArr.toOwnedSlice(self.allocator),
         };
 
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = child,
@@ -459,6 +484,7 @@ pub const Parser = struct {
             },
         };
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = self.top,
@@ -471,6 +497,7 @@ pub const Parser = struct {
         _ = try self.tokens.consume(.semiCol);
         const kind = StmtKind{ .exit = expr };
         return NodeStmt{
+            .line = self.tokens.line,
             .symtable = self.top,
             .kind = kind,
             .id = self.reserveId(),
@@ -495,6 +522,7 @@ pub const Parser = struct {
             .defVar = NodeVar{
                 .ident = ident,
                 .expr = NodeExpr{
+                    .line = self.tokens.line,
                     .typ = typ,
                     .id = expr.id,
                     .kind = expr.kind,
@@ -504,6 +532,7 @@ pub const Parser = struct {
             },
         };
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = self.top,
@@ -511,7 +540,7 @@ pub const Parser = struct {
     }
 
     fn parseType(self: *Parser) ParsingError!TypeIdent {
-        const list = tok.checkType(self.tokens.peek().?, .openBracket);
+        const list = tok.checkType(self.tokens.peekAhead(0).?, .openBracket);
         if (list) {
             _ = try self.tokens.consume(.openBracket);
             const typ = (try self.parseType()).ident;
@@ -530,11 +559,15 @@ pub const Parser = struct {
     fn parseConstant(self: *Parser) ParsingError!NodeStmt {
         _ = try self.tokens.consume(.constant);
         var typ: ?TypeIdent = null;
-        _ = if (self.tokens.consume(.colon)) |_| {
+        std.debug.print("{any}\n", .{self.tokens.peek().?});
+        _ = if (tok.checkType(self.tokens.peek().?, .colon)) {
+            _ = try self.tokens.consume(.colon);
             typ = try self.parseType();
-        } else |err| {
-            if (err != tok.TokenizeError.ExpectedToken) return err;
         };
+        //     else {
+        //     // return;
+        //     // if (err != tok.TokenizeError.ExpectedToken) return err;
+        // };
 
         const ident = (try self.tokens.consume(.ident)).?;
         _ = try self.tokens.consume(.equal);
@@ -544,6 +577,7 @@ pub const Parser = struct {
             .defValue = NodeValue{
                 .ident = ident,
                 .expr = NodeExpr{
+                    .line = self.tokens.line,
                     .typ = typ orelse expr.typ,
                     .id = expr.id,
                     .kind = expr.kind,
@@ -553,6 +587,7 @@ pub const Parser = struct {
             },
         };
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = kind,
             .symtable = self.top,
@@ -561,9 +596,10 @@ pub const Parser = struct {
 
     pub fn parse(self: *Parser) !NodeStmt {
         while (self.tokens.peek()) |_|
-            try self.nodes.append(try self.parseStmt());
+            try self.nodes.append(self.allocator, try self.parseStmt());
 
         return NodeStmt{
+            .line = self.tokens.line,
             .id = self.reserveId(),
             .kind = StmtKind{ .block = self.nodes.items },
             .symtable = self.top,
@@ -679,8 +715,10 @@ test "Parser" {
         .Stmt = NodeStmt{
             .id = 2,
             .symtable = symbTable,
+            .line = 0,
             .kind = StmtKind{
                 .exit = NodeExpr{
+                    .line = 0,
                     .id = 1,
                     .kind = ExprKind{
                         .intLit = Token{ .intLit = 120 },

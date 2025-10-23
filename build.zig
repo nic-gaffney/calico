@@ -7,14 +7,16 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "calico",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
-    const llvm = b.dependency("llvm-zig", .{});
-    _ = try b.modules.put("llvm", llvm.module("llvm"));
-    exe.root_module.addImport("llvm", b.modules.get("llvm").?);
+    // const llvm = b.dependency("llvm-zig", .{});
+    // _ = try b.modules.put("llvm", llvm.module("llvm"));
+    // exe.root_module.addImport("llvm", b.modules.get("llvm").?);
 
     b.installArtifact(exe);
 
@@ -47,11 +49,13 @@ fn unit_test(
     fname: []const u8,
 ) void {
     const unit = b.addTest(.{
-        .root_source_file = b.path(fname),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(fname),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     const unit_tests = b.addRunArtifact(unit);
     test_step.dependOn(&unit_tests.step);
-    unit.root_module.addImport("llvm", b.modules.get("llvm").?);
+    // unit.root_module.addImport("llvm", b.modules.get("llvm").?);
 }

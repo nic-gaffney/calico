@@ -3,6 +3,7 @@ const tok = @import("tokenize.zig");
 const parse = @import("parser.zig");
 const gen = @import("codegen.zig");
 const symb = @import("symtable.zig");
+pub var publicFileName: []const u8 = undefined;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,6 +23,7 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.skip();
     const inputFileName = args.next();
+    publicFileName = inputFileName.?;
 
     var out_name: []const u8 = "out";
     if (std.os.argv.len == 3) out_name = args.next().?;
@@ -35,9 +37,9 @@ pub fn main() !void {
     // Setup native code writer
     const outFileName = try getFileName(allocator, out_name, "ll");
     defer allocator.free(outFileName);
-    const outfile = try std.fs.cwd().createFile(outFileName, .{});
-    const outWriter = outfile.writer();
-    defer outfile.close();
+    // const outfile = try std.fs.cwd().createFile(outFileName, .{});
+    // const outWriter = outfile.writer();
+    // defer outfile.close();
 
     // Turn the input file into a string
     const all = try inputFile.readToEndAlloc(allocator, 2048);
@@ -66,18 +68,18 @@ pub fn main() !void {
     // Codegen
     const fname = try allocator.dupeZ(u8, inputFileName.?);
     defer allocator.free(fname);
-    var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
-    defer generator.deinit();
-    const code = try generator.generate();
+    // var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
+    // defer generator.deinit();
+    // const code = try generator.generate();
     // std.debug.print("{s}\n", .{code});
-    try outWriter.writeAll(code);
+    // try outWriter.writeAll();
 
     const binFile = try getFileName(allocator, out_name, "");
     defer allocator.free(binFile);
-    const ldargv = [_][]const u8{ "clang", "-o", binFile, outFileName };
-    const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
-    defer allocator.free(ldproc.stdout);
-    defer allocator.free(ldproc.stderr);
+    // const ldargv = [_][]const u8{ "clang", "-o", binFile, outFileName };
+    // const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
+    // defer allocator.free(ldproc.stdout);
+    // defer allocator.free(ldproc.stderr);
 }
 
 /// Get file extension based on filename

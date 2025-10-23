@@ -1,0 +1,7 @@
+fn main() -> i32 {
+    const: [i32] nums = 0..10;
+    varbl: i32 sum = 0;
+    for(0..10 : i) {
+        sum = sum + i;
+    }
+}

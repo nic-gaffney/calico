@@ -1,8 +1,5 @@
 import fn puts(str: [u8]) -> i32;
 
 fn main() -> i32 {
-    varbl: i32 pog = puts("Hello World!");
-    pog = 8;
-    const value = pog;
-    return value;
+    return puts("Hello World!\n");
 }
