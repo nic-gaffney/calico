@@ -159,12 +159,13 @@ pub const Generator = struct {
             block = fun.block.?;
             codeSlice = block.kind.block;
         }
-        const funcName: [*:0]const u8 = "main";
+
+        const funcName: [*:0]const u8 = try self.allocator.dupeZ(u8, fun.ident.ident);
 
         const retType = toLLVMtype(fun.retType.?, table, null);
-        var params = std.ArrayList(types.LLVMTypeRef).init(self.allocator);
+        var params = std.ArrayList(types.LLVMTypeRef){};
         for (fun.args) |arg| {
-            try params.append(toLLVMtype(arg.typ, table, null));
+            try params.append(self.allocator, toLLVMtype(arg.typ, table, null));
         }
 
         const funcType = core.LLVMFunctionType(retType, @ptrCast(params.items), @intCast(params.items.len), 0);
@@ -323,10 +324,10 @@ pub const Generator = struct {
                 const functype = expr.symtable.getValue(call.ident.ident).?.typ.Function;
                 const ident = try self.allocator.dupeZ(u8, call.ident.ident);
                 const function = core.LLVMGetNamedFunction(self.module, ident);
-                var args = std.ArrayList(types.LLVMValueRef).init(self.allocator);
+                var args = std.ArrayList(types.LLVMValueRef){};
                 for (call.args.items, functype.input) |arg, intype| {
                     if (!std.meta.eql(expr.symtable.getType(arg.typ.?).?, intype)) return {
-                        try util.comptimeError(.{
+                        util.comptimeError(.{
                             .line = expr.line,
                             .err = CodegenError.IncorrectType,
                             .got = try intype.toString(self.allocator),
@@ -334,7 +335,7 @@ pub const Generator = struct {
                         });
                         break :blk CodegenError.IncorrectType;
                     };
-                    try args.append(try self.genExpr(arg));
+                    try args.append(self.allocator, try self.genExpr(arg));
                 }
                 std.debug.print("FUNCTYPE: {s}\n", .{call.ident.ident});
                 std.debug.print("{any}\n", .{function});

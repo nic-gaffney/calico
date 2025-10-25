@@ -14,9 +14,9 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
-    // const llvm = b.dependency("llvm-zig", .{});
-    // _ = try b.modules.put("llvm", llvm.module("llvm"));
-    // exe.root_module.addImport("llvm", b.modules.get("llvm").?);
+    const llvm = b.dependency("llvm_zig", .{});
+    _ = try b.modules.put("llvm", llvm.module("llvm"));
+    exe.root_module.addImport("llvm", b.modules.get("llvm").?);
 
     b.installArtifact(exe);
 
@@ -57,5 +57,5 @@ fn unit_test(
     });
     const unit_tests = b.addRunArtifact(unit);
     test_step.dependOn(&unit_tests.step);
-    // unit.root_module.addImport("llvm", b.modules.get("llvm").?);
+    unit.root_module.addImport("llvm", b.modules.get("llvm").?);
 }

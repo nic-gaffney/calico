@@ -4,10 +4,11 @@
     .fingerprint = 0x3edb7e13aa41863f,
 
     .dependencies = .{
-        // .llvm = .{
-        //     .url = "git+https://github.com/kassane/llvm-zig#1f587a286f3b5d3bc2b6ecaae6655bddfc86120a",
-        //     .hash = "llvm_zig-1.0.0-IXgkxOJiBACZm15g-MVcLK9RygKIMBAD04sSjEFGjBQZ",
-        // },
+        .llvm_zig = .{
+            // .url = "git+https://github.com/nic-gaffney/llvm-zig#63c971d0444610f4ea556a45b44ca01a13310135",
+            // .hash = "llvm_zig-1.0.0-IXgkxLRjBAD2KiKKCarb9OuYN3lpLiGiWsWZUaxYzJya",
+            .path = "../llvm-zig/"
+        },
     },
     .paths = .{
         "",

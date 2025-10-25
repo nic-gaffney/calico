@@ -34,12 +34,12 @@ pub fn main() !void {
     std.fs.cwd().makeDir("calico-out") catch |err|
         if (err != error.PathAlreadyExists) return err;
 
+
     // Setup native code writer
     const outFileName = try getFileName(allocator, out_name, "ll");
     defer allocator.free(outFileName);
-    // const outfile = try std.fs.cwd().createFile(outFileName, .{});
-    // const outWriter = outfile.writer();
-    // defer outfile.close();
+    const outfile = try std.fs.cwd().createFile(outFileName, .{.truncate = true, .read = true});
+    defer outfile.close();
 
     // Turn the input file into a string
     const all = try inputFile.readToEndAlloc(allocator, 2048);
@@ -60,26 +60,26 @@ pub fn main() !void {
     var treeNode = tree.asNode();
     var pop = symb.Populator.init(arena.allocator());
     try pop.populateSymtable(&treeNode);
-    // var iter = symbTable.scope.?.symbs.iterator();
-    // while (iter.next()) |entry| {
-    // std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-    // }
+    var iter = symbTable.scope.?.symbs.iterator();
+    while (iter.next()) |entry| {
+    std.debug.print("{s} -> {any}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+    }
 
     // Codegen
     const fname = try allocator.dupeZ(u8, inputFileName.?);
     defer allocator.free(fname);
-    // var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
-    // defer generator.deinit();
-    // const code = try generator.generate();
-    // std.debug.print("{s}\n", .{code});
-    // try outWriter.writeAll();
+    var generator = gen.Generator.init(arena.allocator(), tree, @ptrCast(fname));
+    defer generator.deinit();
+    const code = try generator.generate();
+    std.debug.print("{s}\n", .{code});
+    try outfile.writeAll(code);
 
     const binFile = try getFileName(allocator, out_name, "");
     defer allocator.free(binFile);
-    // const ldargv = [_][]const u8{ "clang", "-o", binFile, outFileName };
-    // const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
-    // defer allocator.free(ldproc.stdout);
-    // defer allocator.free(ldproc.stderr);
+    const ldargv = [_][]const u8{ "clang", "-o", binFile, outFileName };
+    const ldproc = try std.process.Child.run(.{ .argv = &ldargv, .allocator = allocator });
+    defer allocator.free(ldproc.stdout);
+    defer allocator.free(ldproc.stderr);
 }
 
 /// Get file extension based on filename

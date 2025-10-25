@@ -1,5 +1,5 @@
 import fn puts(str: [u8]) -> i32;
 
 fn main() -> i32 {
-    return puts("Hello World!\n");
+    return puts("Hello World!");
 }
